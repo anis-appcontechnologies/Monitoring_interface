@@ -1,0 +1,48 @@
+Variables : 
+speed 
+spmax
+accel
+decel
+
+dccur
+idcmx
+isd  
+isq 
+iqmax 
+
+usd  
+usq
+
+ioff 
+itg  
+itghf
+
+Parameters :
+mpole : Pole Pair Number
+miqmx : Maximum RMS Motor nominal Phase Current in Ampere
+msmnl : max no load Speed of the motor between 100 and 100krpm (in rpm at rated voltage)
+msmax : 2*msmnl
+
+mrs  
+mlsd 
+mlsq 
+mpsif
+
+Commands : 
+
+contr
+sens
+stop 
+
+elid 
+psiid
+jid  
+
+smpar
+
+suidq
+susp 
+
+Error :
+err  
+clrerr

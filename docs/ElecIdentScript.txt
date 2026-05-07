@@ -1,0 +1,34 @@
+#############################Identification#############################
+Step1- entries : 
+
+Pole Pair Number
+Maximum RMS Motor nominal Phase Current in Ampere (between 1 and 60 A)
+Maximum RMS Phase to Phase Voltage of the motor (between 12 and 250 V):
+max no load Speed of the motor between 100 and 100krpm (in rpm at rated voltage)
+
+Step2- Sets 
+
+mpole : Pole Pair Number
+miqmx : Maximum RMS Motor nominal Phase Current in Ampere (between 1 and 60 A)
+msmnl : max no load Speed of the motor between 100 and 100krpm (in rpm at rated voltage)
+msmax : 2*msmnl
+
+Step3- Start Identification 
+
+elid
+
+Step4- Compute psif theory 
+
+PsiFTheory = VeffRated*sqrt(2/3) / (2*pi*PolNumberRead*SpeedRatedRpm/60);
+
+Step5- Wait 
+
+Step6- Read §identified parameters 
+
+mrs  
+mlsd 
+mlsq 
+
+Step7- Setup Controller Parameter of Isd and Isq
+
+mpsif
