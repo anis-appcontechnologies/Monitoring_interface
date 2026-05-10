@@ -883,6 +883,7 @@ class ScopeWindow(QDialog):
         self._leg_line_map        = {}
         self._plotted_lines       = {}
         self._legend_obj          = None
+        self._hide_labels         = False
         # RT rolling buffer (pre-allocated numpy arrays)
         self._rt_buf_data         = None   # list of 4 np.ndarray
         self._rt_buf_time         = None   # np.ndarray of timestamps (seconds)
@@ -1321,6 +1322,14 @@ class ScopeWindow(QDialog):
         trig_row.addWidget(self._spin_trig_level)
 
         trig_row.addStretch(1)
+
+        self._chk_hide_labels = QCheckBox("Hide Labels")
+        self._chk_hide_labels.setObjectName("sc_chk_hide_labels")
+        self._chk_hide_labels.setChecked(False)
+        self._chk_hide_labels.setToolTip("Hide channel legend and rescale Y axis to visible data")
+        self._chk_hide_labels.toggled.connect(self._on_hide_labels_toggled)
+        trig_row.addWidget(self._chk_hide_labels)
+
         panel_lay.addLayout(trig_row)
 
         # ── Status strip: pill | status text | bytes | fpwm ──────────────────
@@ -2780,6 +2789,15 @@ QDialog QLineEdit#sc_combo {{
         elif y_min == y_max:
             self.ax.set_ylim(y_min - 1.0, y_max + 1.0)
 
+    def _on_hide_labels_toggled(self, checked: bool):
+        self._hide_labels = checked
+        if self._legend_obj is not None:
+            self._legend_obj.set_visible(not checked)
+        if checked and self._has_plot_data:
+            self._autoscale_y_to_view()
+        self._blit_bg = None
+        self.canvas.draw_idle()
+
     def _on_scroll_zoom(self, event):
         """Scroll wheel zooms X axis anchored to cursor — no translation."""
         if event.inaxes is not self.ax or event.xdata is None:
@@ -3638,7 +3656,7 @@ QDialog QLineEdit#sc_combo {{
                                      animated=True)
                 self._scroll_lines[ch_idx] = line
 
-        self.ax.legend(
+        scroll_leg = self.ax.legend(
             loc='upper right',
             ncol=1, fontsize=9,
             facecolor=p['card'], edgecolor=p['border'], labelcolor=p['text'],
@@ -3646,6 +3664,8 @@ QDialog QLineEdit#sc_combo {{
             borderpad=0.5, handlelength=1.2, handleheight=0.9,
             handletextpad=0.5,
         )
+        self._legend_obj = scroll_leg
+        scroll_leg.set_visible(not self._hide_labels)
         self.canvas.draw()
         self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
         logging.debug("SCOPE _scroll_setup_axes: built with ring_size=%d", ring_size)
@@ -3908,6 +3928,7 @@ QDialog QLineEdit#sc_combo {{
                 self.canvas.mpl_disconnect(self._leg_pick_cid)
             self._leg_pick_cid = self.canvas.mpl_connect('pick_event', self._on_legend_pick)
             self._legend_obj = leg
+            leg.set_visible(not self._hide_labels)
 
         self.ax.set_xlabel("Time (s)", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
         self.ax.set_ylabel("Amplitude", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
