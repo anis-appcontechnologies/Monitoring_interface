@@ -2850,15 +2850,15 @@ class AMCMainWindow(QMainWindow):
         if self._user_disconnected:
             return  # guard against double-call (cable drop + user click race)
         self._user_disconnected = True
+        try:
+            self.serial.disconnect()  # close port first — loops hit exception and exit cleanly
+        except Exception:
+            pass
         self._stop_loop_thread()
         self._stop_fault_loop()
         self._stop_get_loop()
         self._stop_status_loop()
         self._stop_cmd_loop()
-        try:
-            self.serial.disconnect()
-        except Exception:
-            pass
         self._set_disconnected_ui()
         self._log_signal("WARN", "Disconnected from serial port")
 
