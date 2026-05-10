@@ -106,6 +106,7 @@ def _elf_find_in_folder(folder: str, timeout_s: float = 12.0) -> list:
     return [p for _, p in pref] + [p for _, p in other]
 
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog, QFrame, QLabel, QPushButton, QComboBox, QDoubleSpinBox,
     QCheckBox, QHBoxLayout, QVBoxLayout, QSizePolicy, QFileDialog, QWidget,
     QScrollArea, QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -121,6 +122,7 @@ except ImportError:
     _QTA = False
 
 import matplotlib
+import matplotlib.ticker as mticker
 matplotlib.use("QtAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -743,7 +745,7 @@ class _ChannelCombo(QWidget):
         self._refresh_display()
         self.currentIndexChanged.emit(self._current)
         if self._toast_cb and name:
-            self._toast_cb(f"Variable '{name}' removed from channel", "info")
+            self._toast_cb(f"Variable '{name}' removed from channel", "warn")
 
     def hideEvent(self, event):
         self._close_popup()
@@ -865,7 +867,7 @@ class _ElfVarPickerDialog(QDialog):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             if self._toast_cb:
-                self._toast_cb(f"Variable '{name}' removed from Ch{self._ch_idx + 1}", "info")
+                self._toast_cb(f"Variable '{name}' removed from Ch{self._ch_idx + 1}", "warn")
         else:
             # add to combo
             self._combo.addItem(name)
@@ -887,7 +889,8 @@ class ScopeWindow(QDialog):
     _sig_bytes          = Signal(int, int)
     _sig_update_buttons = Signal()
     _sig_stop_spinner   = Signal()
-    _sig_plot           = Signal(object, object, object)   # ch_data, t_axis, cfg
+    _sig_plot           = Signal(object, object, object)   # ch_data, t_axis, cfg (full rebuild)
+    _sig_rt_fast        = Signal(object, object, object)   # ch_data, t_axis, cfg (line-update only)
     _sig_show_warning   = Signal(str, str)                 # title, message
     _sig_elf_loaded     = Signal(int)                      # count of vars loaded
     _sig_elf_scanning   = Signal()                         # folder scan started
@@ -948,6 +951,7 @@ class ScopeWindow(QDialog):
         self._rt_buf_cfg          = None   # config used to build buffer
         self._rt_panned           = False  # True when user has panned away from live
         self._rt_t0               = None   # wall-clock time of first RT sample
+        self._rt_lines            = {}     # ch_idx -> Line2D reused across RT frames
         # Data range for zoom-out clamping
         self._data_xlim           = None
         self._data_ylim           = None
@@ -968,6 +972,7 @@ class ScopeWindow(QDialog):
         self._sig_update_buttons.connect(self._update_button_states)
         self._sig_stop_spinner.connect(self._stop_configure_spinner)
         self._sig_plot.connect(self._do_plot)
+        self._sig_rt_fast.connect(self._do_rt_fast_update)
         self._sig_show_warning.connect(self._slot_show_warning)
         self._sig_elf_loaded.connect(self._on_elf_loaded_slot)
         self._sig_elf_scanning.connect(self._on_elf_scanning_slot)
@@ -1098,7 +1103,7 @@ class ScopeWindow(QDialog):
 
             # [+] open ELF variable picker
             plus_btn = QPushButton("+")
-            plus_btn.setObjectName("sc_btn_elf_plus")
+            plus_btn.setObjectName("sc_btn_ch_add")
             plus_btn.setFixedSize(22, 22)
             plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             plus_btn.setToolTip("Add ELF variable to this channel  (load ELF first)")
@@ -1451,6 +1456,11 @@ class ScopeWindow(QDialog):
 
         self.fig = Figure(dpi=100)
         self.ax = self.fig.add_subplot(111)
+        # Precision tick labels: show more decimals when zoomed in, no offset/sci notation
+        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
+        _yfmt.set_scientific(False)
+        self.ax.yaxis.set_major_formatter(_yfmt)
+        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
@@ -1843,6 +1853,15 @@ QFrame#sc_combo_popup {{
     border-radius: 4px;
 }}
 
+/* scroll area + rows container inside popup — must match popup bg */
+QScrollArea#sc_combo_popup_scroll {{
+    background: {POPUP_CARD};
+    border: none;
+}}
+QWidget#sc_combo_popup_rows {{
+    background: {POPUP_CARD};
+}}
+
 /* each row in the popup */
 QWidget#sc_combo_row {{
     background: transparent;
@@ -1865,19 +1884,21 @@ QPushButton#sc_combo_row_lbl:hover {{
     color: {RED};
 }}
 
-/* row [−] remove button — borderless, red text only */
+/* row [−] remove button — red pill */
 QPushButton#sc_combo_row_rem {{
-    background: transparent;
+    background: {RED_BG};
     color: {RED};
-    border: none;
-    font-size: 16px;
+    border: 1px solid {RED_BDR};
+    border-radius: 10px;
+    font-size: 14px;
     font-weight: 700;
     padding: 0px;
 }}
 QPushButton#sc_combo_row_rem:hover {{
-    color: {RED_DARK};
-    background: {RED_BG};
-    border-radius: 3px;
+    background: {RED};
+    color: white;
+    border-color: {RED_DARK};
+    border-radius: 10px;
 }}
 
 /* ── Spin boxes ──────────────────────────────────────────────── */
@@ -2101,8 +2122,8 @@ QToolTip {{
 }}
 
 
-/* ── Per-channel [+] button (in channel grid) ───────────────── */
-#sc_dialog QPushButton#sc_btn_elf_plus {{
+/* ── Per-channel [+] button (in channel grid, NOT picker) ────── */
+QPushButton#sc_btn_ch_add {{
     background: {INPUT_BG};
     color: {TEXT2};
     border: 1px solid {BORDER};
@@ -2111,20 +2132,18 @@ QToolTip {{
     font-weight: 700;
     padding: 0px;
 }}
-#sc_dialog QPushButton#sc_btn_elf_plus:hover {{
+QPushButton#sc_btn_ch_add:hover {{
     background: {RED_BG};
     border-color: {RED};
     color: {RED};
 }}
-#sc_dialog QPushButton#sc_btn_elf_plus:disabled {{
+QPushButton#sc_btn_ch_add:disabled {{
     color: {FAINT};
     border-color: {BORDER};
     background: {BG};
 }}
 
-
-
-/* ── Picker dialog: [+] add button (always green) ───────────── */
+/* ── Picker dialog: [+] add button (green) ──────────────────── */
 QPushButton#sc_btn_elf_plus {{
     background: {p['green_bg']};
     color: {p['green']};
@@ -2873,8 +2892,10 @@ QDialog QLineEdit#sc_combo {{
             return
         factor = 0.75 if event.button == 'up' else 1.0 / 0.75
 
-        # detect Shift modifier
-        shift_held = (event.key is not None and 'shift' in str(event.key).lower())
+        # detect Shift modifier via Qt (event.key is unreliable in Qt backend)
+        shift_held = bool(
+            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
+        )
 
         if shift_held and event.ydata is not None:
             # Y-only zoom anchored at cursor — unlock any Y lock first
@@ -3344,6 +3365,7 @@ QDialog QLineEdit#sc_combo {{
 
     def _worker_record(self):
         logging.debug("SCOPE _worker_record: starting")
+        self._rt_lines = {}   # single-shot always does full _do_plot rebuild
         if not self.last_config:
             self._set_status("Not configured")
             self._sig_update_buttons.emit()
@@ -3579,12 +3601,11 @@ QDialog QLineEdit#sc_combo {{
         self._lbl_live_badge.style().polish(self._lbl_live_badge)
 
     def _rt_emit_plot(self, cfg):
-        """Build a plot from the rolling buffer and emit _sig_plot if not panned,
-        or just update the badge if panned (user is inspecting history)."""
+        """Emit RT plot update. Fast-path reuses existing Line2D objects (no ax.cla())."""
         t_ms, ch_out = self._rt_buf_get_view()
         if t_ms is None:
             return
-        # Build ch_data as lists (as _do_plot expects)
+
         ch_codes = cfg['ch_codes']
         ch_data = [[] for _ in range(4)]
         for ch in range(4):
@@ -3592,11 +3613,12 @@ QDialog QLineEdit#sc_combo {{
                 ch_data[ch] = ch_out[ch].tolist()
 
         if not self._rt_panned:
-            # Auto-scroll: show full buffer window, live edge at right
-            self._sig_plot.emit(ch_data, (t_ms / 1000.0).tolist(), cfg)
-        else:
-            # User has panned — only update live values strip, leave plot alone
-            pass
+            if self._rt_lines:
+                # Fast-path: update line data only — no axes rebuild
+                self._sig_rt_fast.emit(ch_data, (t_ms / 1000.0).tolist(), cfg)
+            else:
+                # First frame: full plot to create axes, lines, labels
+                self._sig_plot.emit(ch_data, (t_ms / 1000.0).tolist(), cfg)
 
         QTimer.singleShot(0, self._rt_update_live_badge)
 
@@ -3700,6 +3722,7 @@ QDialog QLineEdit#sc_combo {{
         finally:
             self.serial_manager.scope_active.clear()
             self._realtime_running = False
+            self._rt_lines = {}   # reset so next RT session rebuilds axes on first frame
             self._set_status("Real-time stopped — last frame preserved")
             self._sig_update_buttons.emit()
             QTimer.singleShot(0, lambda: self._live_strip.setVisible(False))
@@ -3722,6 +3745,11 @@ QDialog QLineEdit#sc_combo {{
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
+        # Restore tick precision after cla()
+        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
+        _yfmt.set_scientific(False)
+        self.ax.yaxis.set_major_formatter(_yfmt)
+        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
         self.ax.set_xlabel("Time (s)", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
         self.ax.set_ylabel("Amplitude", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
         self.ax.set_xlim(-t_display, 0.0)
@@ -3956,6 +3984,11 @@ QDialog QLineEdit#sc_combo {{
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
+        # Restore tick precision after cla() resets formatters
+        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
+        _yfmt.set_scientific(False)
+        self.ax.yaxis.set_major_formatter(_yfmt)
+        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
 
         ch_codes    = cfg['ch_codes']
         any_plotted = False
@@ -4044,6 +4077,52 @@ QDialog QLineEdit#sc_combo {{
         self._has_plot_data = True
         self._last_plot_data = (ch_data, t_axis, cfg)
         self._btn_export.setEnabled(True)
+
+        # Seed RT fast-path: reuse these Line2D objects on subsequent RT frames
+        if self._realtime_running:
+            self._rt_lines = dict(self._plotted_lines)
+
+    def _do_rt_fast_update(self, ch_data, t_axis, cfg):
+        """RT fast-path: update line data without rebuilding axes.
+        Called on every RT frame after the first to avoid ax.cla() overhead.
+        """
+        if not self._rt_lines:
+            # Fallback: axes not yet set up, do full rebuild
+            self._do_plot(ch_data, t_axis, cfg)
+            return
+
+        t_arr = np.asarray(t_axis, dtype=np.float32)
+        any_updated = False
+
+        for ch_idx, line in self._rt_lines.items():
+            samples = ch_data[ch_idx] if ch_idx < len(ch_data) else []
+            if samples:
+                s_arr = np.asarray(samples, dtype=np.float32)
+                line.set_xdata(t_arr[:len(s_arr)])
+                line.set_ydata(s_arr)
+                any_updated = True
+                # Update live labels
+                if self._live_labels and ch_idx < len(self._live_labels):
+                    ch_codes = cfg['ch_codes']
+                    code = ch_codes[ch_idx]
+                    var_name = VARIABLE_NAMES.get(code, f"Ch{ch_idx + 1}")
+                    unit = VARIABLE_UNITS.get(var_name, "")
+                    unit_str = f" {unit}" if unit else ""
+                    self._live_labels[ch_idx].setText(
+                        f"{var_name}: {s_arr[-1]:.4g}{unit_str}"
+                    )
+
+        if not any_updated:
+            return
+
+        # Autoscale X to full buffer window, Y to visible data
+        if t_arr.size > 0:
+            self.ax.set_xlim(t_arr[0], t_arr[-1])
+        if not self._ylim_locked:
+            self._autoscale_y_to_view()
+
+        self._blit_bg = None
+        self.canvas.draw_idle()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EXPORT
