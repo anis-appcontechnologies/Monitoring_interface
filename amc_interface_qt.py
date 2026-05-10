@@ -70,7 +70,7 @@ from PySide6.QtGui import (
     QFont, QColor, QIcon, QPixmap, QPainter, QPen, QBrush,
     QAction, QPolygon, QKeySequence, QShortcut,
 )
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QGraphicsDropShadowEffect
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 try:
     import qtawesome as qta
@@ -2806,8 +2806,9 @@ class AMCMainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _show_toast(self, message: str, level: str = "warn"):
-        """Modern stacked toast: icon + message in a rounded pill, drop shadow,
-        slide+fade in/out. Multiple toasts stack vertically without overlap."""
+        """Modern stacked toast: icon + message in a rounded pill, drop shadow.
+        Toast is a top-level frameless tool window so it floats above any
+        modal dialog (Scope, Identification, etc.). Multiple toasts stack."""
         # Icon + colors per level
         spec = {
             "warn":  ("fa5s.exclamation-triangle", C["orange_bg"], C["orange"],  C["orange_border"]),
@@ -2817,8 +2818,22 @@ class AMCMainWindow(QMainWindow):
         }
         icon_name, bg, fg, border = spec.get(level, spec["warn"])
 
-        # Container pill
-        toast = QFrame(self)
+        # Anchor target: the currently active top-level window (scope dialog if
+        # open, else main window). Toast positions relative to its top edge.
+        anchor = QApplication.activeWindow() or self
+        if anchor is None or not anchor.isVisible():
+            anchor = self
+
+        # Top-level frameless tool window — floats above modal dialogs
+        toast = QFrame(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
+        toast.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        toast.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         toast.setObjectName("modern_toast")
         toast.setStyleSheet(
             f"QFrame#modern_toast {{"
@@ -2833,13 +2848,6 @@ class AMCMainWindow(QMainWindow):
             f"  font-weight: 600;"
             f"}}"
         )
-
-        # Drop shadow for elevation
-        shadow = QGraphicsDropShadowEffect(toast)
-        shadow.setBlurRadius(22)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(0, 0, 0, 90))
-        toast.setGraphicsEffect(shadow)
 
         # Layout: icon + text
         lay = QHBoxLayout(toast)
@@ -2861,7 +2869,7 @@ class AMCMainWindow(QMainWindow):
         lay.addWidget(text_lbl)
 
         toast.adjustSize()
-        tw = toast.sizeHint().width()
+        tw = max(toast.sizeHint().width(), 260)
         th = toast.sizeHint().height()
 
         # Stack: find vertical offset based on currently visible toasts
@@ -2869,29 +2877,37 @@ class AMCMainWindow(QMainWindow):
             self._toast_stack = []
         # purge dead refs
         self._toast_stack = [t for t in self._toast_stack
-                             if t is not None and not t.isHidden()]
-        y_base = 52
+                             if t is not None and t.isVisible()]
         y_step = th + 8
-        y = y_base + len(self._toast_stack) * y_step
-        x = (self.width() - tw) // 2
-        toast.setGeometry(x, y, tw, th)
-        toast.raise_()
-        toast.show()
 
-        # Slide-in animation (geometry y: y-12 -> y)
+        # Anchor at top-center of active window in global coords
+        try:
+            ageom = anchor.frameGeometry()
+            top_center_global = anchor.mapToGlobal(QPoint(ageom.width() // 2, 0))
+            ax = top_center_global.x() - tw // 2
+            ay = top_center_global.y() + 18
+        except Exception:
+            ax = (self.width() - tw) // 2
+            ay = 60
+        ay += len(self._toast_stack) * y_step
+
+        toast.setGeometry(ax, ay - 12, tw, th)
+        toast.show()
+        toast.raise_()
+
+        # Slide-in animation (top -> resting y)
         slide = QPropertyAnimation(toast, b"geometry", toast)
         slide.setDuration(220)
-        slide.setStartValue(QRect(x, y - 12, tw, th))
-        slide.setEndValue(QRect(x, y, tw, th))
+        slide.setStartValue(QRect(ax, ay - 12, tw, th))
+        slide.setEndValue(QRect(ax, ay, tw, th))
         slide.setEasingCurve(QEasingCurve.Type.OutCubic)
         slide.start()
 
         self._toast_stack.append(toast)
 
         def _dismiss():
-            # Slide-up + delete
             try:
-                if toast.isHidden():
+                if not toast.isVisible():
                     return
                 out = QPropertyAnimation(toast, b"geometry", toast)
                 out.setDuration(180)

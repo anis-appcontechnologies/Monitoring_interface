@@ -122,7 +122,6 @@ except ImportError:
     _QTA = False
 
 import matplotlib
-import matplotlib.ticker as mticker
 matplotlib.use("QtAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -591,6 +590,72 @@ class _ChannelCombo(QWidget):
             self._popup.deleteLater()
             self._popup = None
 
+    def _build_popup_stylesheet(self) -> str:
+        """Self-contained stylesheet for the top-level popup window.
+        ScopeWindow's QSS does NOT cascade into Qt.Tool top-levels, so we
+        apply colors directly. Keeps the modern red trash button and
+        popup card background working without inheritance."""
+        p = _get_palette()
+        dark = p.get('log_bg', '#1A1A2E') in ('#1A1A2E', '#12122A')
+        CARD = p.get('card', '#FFFFFF')
+        POPUP_CARD = p.get('log_bg', '#12122A') if dark else CARD
+        POPUP_BORDER = p.get('border', '#E0E2E7')
+        POPUP_TEXT = p.get('log_text', '#E8EAF0') if dark else p.get('text', '#1A1A2E')
+        POPUP_HOVER = "#26264A" if dark else "#F0F2F7"
+        RED = p.get('red', '#B71C1C')
+        RED_DARK = p.get('red_dark', '#7F1212')
+        return f"""
+QFrame#sc_combo_popup {{
+    background: {POPUP_CARD};
+    border: 1px solid {POPUP_BORDER};
+    border-radius: 6px;
+}}
+QScrollArea#sc_combo_popup_scroll {{
+    background: {POPUP_CARD};
+    border: none;
+}}
+QWidget#sc_combo_popup_rows {{
+    background: {POPUP_CARD};
+}}
+QWidget#sc_combo_row {{
+    background: transparent;
+}}
+QWidget#sc_combo_row:hover {{
+    background: {POPUP_HOVER};
+    border-radius: 4px;
+}}
+QPushButton#sc_combo_row_lbl {{
+    background: transparent;
+    color: {POPUP_TEXT};
+    border: none;
+    font-size: 11px;
+    padding: 3px 6px;
+    text-align: left;
+}}
+QPushButton#sc_combo_row_lbl:hover {{
+    color: {RED};
+}}
+QPushButton#sc_combo_row_rem {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                 stop:0 {RED}, stop:1 {RED_DARK});
+    color: white;
+    border: 1px solid {RED_DARK};
+    border-radius: 11px;
+    font-size: 13px;
+    font-weight: 800;
+    padding: 0px;
+}}
+QPushButton#sc_combo_row_rem:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                 stop:0 #E74A50, stop:1 {RED});
+    border-color: {RED_DARK};
+}}
+QPushButton#sc_combo_row_rem:pressed {{
+    background: {RED_DARK};
+    border-color: {RED_DARK};
+}}
+"""
+
     def _open_popup(self):
         self._close_popup()
         # Enforce singleton: close any other channel combo popup first
@@ -605,6 +670,8 @@ class _ChannelCombo(QWidget):
                        Qt.WindowType.NoDropShadowWindowHint)
         popup.setObjectName("sc_combo_popup")
         popup.setFrameShape(QFrame.Shape.StyledPanel)
+        # Top-level popup doesn't inherit ScopeWindow stylesheet — apply directly
+        popup.setStyleSheet(self._build_popup_stylesheet())
         self._popup = popup
 
         outer_lay = QVBoxLayout(popup)
@@ -1474,11 +1541,7 @@ class ScopeWindow(QDialog):
 
         self.fig = Figure(dpi=100)
         self.ax = self.fig.add_subplot(111)
-        # Precision tick labels: show more decimals when zoomed in, no offset/sci notation
-        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
-        _yfmt.set_scientific(False)
-        self.ax.yaxis.set_major_formatter(_yfmt)
-        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
+        # Y axis: matplotlib defaults (matches expert scope.py — no custom formatter)
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
@@ -3772,11 +3835,6 @@ QDialog QLineEdit#sc_combo {{
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
-        # Restore tick precision after cla()
-        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
-        _yfmt.set_scientific(False)
-        self.ax.yaxis.set_major_formatter(_yfmt)
-        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
         self.ax.set_xlabel("Time (s)", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
         self.ax.set_ylabel("Amplitude", color=p['muted'], fontsize=9, fontweight='semibold', labelpad=2)
         self.ax.set_xlim(-t_display, 0.0)
@@ -4011,11 +4069,6 @@ QDialog QLineEdit#sc_combo {{
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
-        # Restore tick precision after cla() resets formatters
-        _yfmt = mticker.ScalarFormatter(useOffset=False, useMathText=False)
-        _yfmt.set_scientific(False)
-        self.ax.yaxis.set_major_formatter(_yfmt)
-        self.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8, min_n_ticks=4))
 
         ch_codes    = cfg['ch_codes']
         any_plotted = False
