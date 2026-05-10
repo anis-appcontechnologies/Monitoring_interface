@@ -154,23 +154,21 @@ _THEME = "light"
 # ── Optional sub-modules (imported AFTER C/C_DARK so _get_palette() works) ───
 try:
     from electrical_params_qt import ElectricalParametersIdentification
-    _ELEC_PARAMS_QT = True
 except ImportError:
-    _ELEC_PARAMS_QT = False
-    try:
-        from electrical_params import ElectricalParametersIdentification
-    except ImportError:
-        ElectricalParametersIdentification = None
+    ElectricalParametersIdentification = None
+    logging.warning("electrical_params_qt not found — Electrical Parameters dialog unavailable")
 
 try:
     from save_params_qt import SaveParameters
 except ImportError:
     SaveParameters = None
+    logging.warning("save_params_qt not found — Save Parameters dialog unavailable")
 
 try:
     from load_params_qt import LoadParameters
 except ImportError:
     LoadParameters = None
+    logging.warning("load_params_qt not found — Load Parameters dialog unavailable")
 
 try:
     from psif_param import PMFluxIdentification
@@ -179,23 +177,15 @@ except ImportError:
 
 try:
     from inertia_param_qt import InertiaIdentification
-    _INERTIA_QT = True
 except ImportError:
-    _INERTIA_QT = False
-    try:
-        from inertia_param import InertiaIdentification
-    except ImportError:
-        InertiaIdentification = None
+    InertiaIdentification = None
+    logging.warning("inertia_param_qt not found — Mechanical Parameters dialog unavailable")
 
 try:
     from terminal_qt import Terminal
-    _TERMINAL_QT = True
 except ImportError:
-    _TERMINAL_QT = False
-    try:
-        from terminal import Terminal
-    except ImportError:
-        Terminal = None
+    Terminal = None
+    logging.warning("terminal_qt not found — Terminal dialog unavailable")
 
 try:
     from scope_qt import ScopeWindow, _apply_mono, MONO_FONT_FAMILY
@@ -2237,7 +2227,7 @@ class AMCMainWindow(QMainWindow):
             a = QAction("Electrical Parameters", self)
             if _QTA:
                 a.setIcon(qta.icon("fa5s.bolt", color=C["text2"]))
-            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "electrical_params.py not found."))
+            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "electrical_params_qt.py not found."))
             ident_menu.addAction(a)
         if InertiaIdentification:
             a = QAction("Mechanical Parameters", self)
@@ -2249,7 +2239,7 @@ class AMCMainWindow(QMainWindow):
             a = QAction("Mechanical Parameters", self)
             if _QTA:
                 a.setIcon(qta.icon("fa5s.cog", color=C["text2"]))
-            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "inertia_param.py not found."))
+            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "inertia_param_qt.py not found."))
             ident_menu.addAction(a)
 
         term_menu = mb.addMenu("Terminal")
@@ -2263,7 +2253,7 @@ class AMCMainWindow(QMainWindow):
             a = QAction("Open Terminal", self)
             if _QTA:
                 a.setIcon(qta.icon("fa5s.terminal", color=C["text2"]))
-            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "terminal.py not found."))
+            a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "terminal_qt.py not found."))
             term_menu.addAction(a)
 
         monitor_menu = mb.addMenu("Monitoring")
@@ -3409,17 +3399,13 @@ class AMCMainWindow(QMainWindow):
             }
         except Exception as e:
             logging.warning("Could not read defaults: %s", e)
-        if _ELEC_PARAMS_QT:
+        if ElectricalParametersIdentification:
             dlg = ElectricalParametersIdentification(self, self.serial, self.cmd_manager,
                                                      defaults=defaults)
             dlg.exec()
-            self._start_get_loop(); self._start_fault_loop(); self._start_status_loop()
         else:
-            self._start_get_loop(); self._start_fault_loop(); self._start_status_loop()
-            import tkinter as tk
-            root = tk.Tk()
-            ElectricalParametersIdentification(root, self.serial, self.cmd_manager, defaults=defaults)
-            root.mainloop()
+            _ModernModal.error(self, "Module not found", "electrical_params_qt.py not found.")
+        self._start_get_loop(); self._start_fault_loop(); self._start_status_loop()
 
     def open_save_params(self):
         if not SaveParameters:
@@ -3444,14 +3430,11 @@ class AMCMainWindow(QMainWindow):
             self.serial._ser.reset_input_buffer()
         except Exception:
             pass
-        if _INERTIA_QT:
+        if InertiaIdentification:
             dlg = InertiaIdentification(self, self.serial, self.cmd_manager)
             dlg.exec()
         else:
-            import tkinter as tk
-            root = tk.Tk()
-            InertiaIdentification(root, self.serial, self.cmd_manager)
-            root.mainloop()
+            _ModernModal.error(self, "Module not found", "inertia_param_qt.py not found.")
         # Restart loops after dialog closes (only if still connected)
         if self.serial.is_open:
             self._start_fault_loop()
@@ -3460,15 +3443,10 @@ class AMCMainWindow(QMainWindow):
 
     def open_terminal(self):
         if not Terminal:
+            _ModernModal.error(self, "Module not found", "terminal_qt.py not found.")
             return
-        if _TERMINAL_QT:
-            dlg = Terminal(self, self.serial)
-            dlg.exec()
-        else:
-            import tkinter as tk
-            root = tk.Tk()
-            Terminal(root, self.serial)
-            root.mainloop()
+        dlg = Terminal(self, self.serial)
+        dlg.exec()
 
     def open_monitoring(self):
         if not ScopeWindow:
