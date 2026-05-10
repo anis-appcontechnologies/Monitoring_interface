@@ -2282,7 +2282,12 @@ class AMCMainWindow(QMainWindow):
         self._start_cmd_loop()
 
     def _set_disconnected_ui(self):
-        self.serial.disconnect()   # always clear serial state on UI disconnect
+        # Loops are stopped by _on_disconnect before this is called; stop again
+        # here only as a safety net (e.g. direct calls from tests or cable-drop path)
+        self._stop_fault_loop()
+        self._stop_get_loop()
+        self._stop_status_loop()
+        self._stop_cmd_loop()
         self.connect_button.setEnabled(True)
         self.connect_button.setText("Connect")
         self.connect_button.setFixedWidth(_px(110))
@@ -2726,15 +2731,18 @@ class AMCMainWindow(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_disconnect(self):
+        if self._user_disconnected:
+            return  # guard against double-call (cable drop + user click race)
         self._user_disconnected = True
-        try:
-            self.serial.disconnect()
-        except Exception:
-            pass
         self._stop_loop_thread()
         self._stop_fault_loop()
         self._stop_get_loop()
         self._stop_status_loop()
+        self._stop_cmd_loop()
+        try:
+            self.serial.disconnect()
+        except Exception:
+            pass
         self._set_disconnected_ui()
         self._log_signal("WARN", "Disconnected from serial port")
 
@@ -3038,9 +3046,6 @@ class AMCMainWindow(QMainWindow):
         _sm = {1: "FixAngle", 2: "Sensor", 3: "Sensorless_BEMF", 4: "Sensorless_HFI"}
         _err_count = 0
         while self.status_loop_running:
-            if self.serial.scope_active.is_set():
-                time.sleep(0.2)
-                continue
             if self.serial.is_open:
                 _t0 = time.monotonic()
                 try:
@@ -3092,9 +3097,6 @@ class AMCMainWindow(QMainWindow):
 
     def _fault_loop(self):
         while self.fault_loop_running:
-            if self.serial.scope_active.is_set():
-                time.sleep(0.2)
-                continue
             if self.serial.is_open:
                 in_reboot = (time.time() - getattr(self, "_reset_at", 0)) < 30.0
                 if in_reboot:
@@ -3129,9 +3131,6 @@ class AMCMainWindow(QMainWindow):
         iters_per_poll = int(1.0 / sleep_dur)
         count = 0
         while self.get_loop_running:
-            if self.serial.scope_active.is_set():
-                time.sleep(0.2)
-                continue
             if not self.serial.is_open:
                 break
             if count >= iters_per_poll:
@@ -3323,6 +3322,12 @@ class AMCMainWindow(QMainWindow):
     def open_mechanical_params(self):
         if not InertiaIdentification or not self._check_ready_for_identification():
             return
+        # Stop background serial loops so identification worker has exclusive access
+        self._stop_get_loop(); self._stop_fault_loop(); self._stop_status_loop()
+        try:
+            self.serial._ser.reset_input_buffer()
+        except Exception:
+            pass
         if _INERTIA_QT:
             dlg = InertiaIdentification(self, self.serial, self.cmd_manager)
             dlg.exec()
@@ -3331,6 +3336,11 @@ class AMCMainWindow(QMainWindow):
             root = tk.Tk()
             InertiaIdentification(root, self.serial, self.cmd_manager)
             root.mainloop()
+        # Restart loops after dialog closes (only if still connected)
+        if self.serial.is_open:
+            self._start_fault_loop()
+            self._start_get_loop()
+            self._start_status_loop()
 
     def open_terminal(self):
         if not Terminal:

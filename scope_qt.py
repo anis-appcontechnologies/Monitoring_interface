@@ -3720,12 +3720,13 @@ QDialog QLineEdit#sc_combo {{
                     for i in range(num_samples)
                 ]
                 if self._scroll_rings is not None:
-                    if self._scroll_t_ring is not None:
-                        self._scroll_t_ring.extend(block_times)
-                    for ch_idx in range(4):
-                        if ch_codes[ch_idx] > 0:
-                            self._scroll_rings[ch_idx].extend(
-                                [float('nan')] + channels_data[ch_idx])
+                    with self._scroll_lock:
+                        if self._scroll_t_ring is not None:
+                            self._scroll_t_ring.extend(block_times)
+                        for ch_idx in range(4):
+                            if ch_codes[ch_idx] > 0:
+                                self._scroll_rings[ch_idx].extend(
+                                    [float('nan')] + channels_data[ch_idx])
                 self._scroll_frame_count += 1
                 self._sig_status.emit(f"Scroll — frame {self._scroll_frame_count}")
             else:
@@ -3758,8 +3759,9 @@ QDialog QLineEdit#sc_combo {{
 
             ch_codes   = self.last_config['ch_codes']
             t_display  = self._scroll_t_display
-            snapshots  = [np.array(ring) for ring in self._scroll_rings]
-            t_abs      = np.array(self._scroll_t_ring) if self._scroll_t_ring is not None else None
+            with self._scroll_lock:
+                snapshots = [np.array(ring) for ring in self._scroll_rings]
+                t_abs     = np.array(self._scroll_t_ring) if self._scroll_t_ring is not None else None
 
             if t_abs is not None:
                 t_now     = time.monotonic() - self._scroll_t0
