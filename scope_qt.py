@@ -111,8 +111,14 @@ from PySide6.QtWidgets import (
     QScrollArea, QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QSettings, QMetaObject, Q_ARG
+from PySide6.QtCore import Qt, QTimer, Signal, QSettings, QMetaObject, Q_ARG, QSize
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPixmap, QColor, QPen, QIcon, QBrush
+
+try:
+    import qtawesome as qta
+    _QTA = True
+except ImportError:
+    _QTA = False
 
 import matplotlib
 matplotlib.use("QtAgg")
@@ -166,7 +172,9 @@ def _apply_mono(widget):
 
 
 def _make_maximize_icon(color_hex: str, size: int = 16) -> QIcon:
-    """Browser-style full-screen icon: four corner arrows pointing inward."""
+    """Expand icon via QtAwesome (fa5s.expand-alt); falls back to hand-drawn corners."""
+    if _QTA:
+        return qta.icon("fa5s.expand-alt", color=color_hex)
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -175,21 +183,19 @@ def _make_maximize_icon(color_hex: str, size: int = 16) -> QIcon:
     pen.setWidth(2)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
-    m, a = 2, 4  # margin, arrow arm length
-    # Top-left corner: right angle lines + arrow
+    m, a = 2, 4
     p.drawLine(m, m + a, m, m); p.drawLine(m, m, m + a, m)
-    # Top-right corner
     p.drawLine(size - m - a, m, size - m, m); p.drawLine(size - m, m, size - m, m + a)
-    # Bottom-left corner
     p.drawLine(m, size - m - a, m, size - m); p.drawLine(m, size - m, m + a, size - m)
-    # Bottom-right corner
     p.drawLine(size - m - a, size - m, size - m, size - m); p.drawLine(size - m, size - m, size - m, size - m - a)
     p.end()
     return QIcon(pix)
 
 
 def _make_restore_icon(color_hex: str, size: int = 16) -> QIcon:
-    """Restore icon: four corner arrows pointing outward."""
+    """Compress icon via QtAwesome (fa5s.compress-alt); falls back to hand-drawn."""
+    if _QTA:
+        return qta.icon("fa5s.compress-alt", color=color_hex)
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -198,8 +204,7 @@ def _make_restore_icon(color_hex: str, size: int = 16) -> QIcon:
     pen.setWidth(2)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
-    c, a = size // 2, 4  # center, arm length
-    # Four L-shapes from center outward
+    c, a = size // 2, 4
     p.drawLine(c - 1, c - 1, c - a, c - a); p.drawLine(c - a, c - a, c - a, c - a + 2); p.drawLine(c - a, c - a, c - a + 2, c - a)
     p.drawLine(c + 1, c - 1, c + a, c - a); p.drawLine(c + a, c - a, c + a, c - a + 2); p.drawLine(c + a, c - a, c + a - 2, c - a)
     p.drawLine(c - 1, c + 1, c - a, c + a); p.drawLine(c - a, c + a, c - a, c + a - 2); p.drawLine(c - a, c + a, c - a + 2, c + a)
@@ -321,41 +326,27 @@ def _make_elf_icon(size: int = 40, dark: bool = False) -> QIcon:
     return QIcon(final)
 
 
-def _make_updown_arrow_path(color_hex: str, size: int = 14) -> str:
+def _make_arrow_png(direction: str, color_hex: str, size: int = 8) -> str:
     """
-    Draw a ▲▼ pixmap and save to a temp PNG.
-    Returns the file path so it can be used in QSS url().
+    Draw a single crisp triangle arrow (direction='up' or 'down') and save to a
+    temp PNG. Returns the POSIX path for use in QSS url().
     """
-    import tempfile, os as _os
+    import tempfile
+    from PySide6.QtGui import QPolygon
+    from PySide6.QtCore import QPoint
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color_hex))
-    pen.setWidth(1)
-    p.setPen(pen)
+    p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QBrush(QColor(color_hex)))
-    half = size // 2
-    margin = size // 4
-
-    # ▲ top half
-    from PySide6.QtGui import QPolygon
-    from PySide6.QtCore import QPoint
-    up = QPolygon([
-        QPoint(margin,      half - 1),
-        QPoint(size - margin, half - 1),
-        QPoint(half,        1),
-    ])
-    p.drawPolygon(up)
-    # ▼ bottom half
-    dn = QPolygon([
-        QPoint(margin,      half + 1),
-        QPoint(size - margin, half + 1),
-        QPoint(half,        size - 1),
-    ])
-    p.drawPolygon(dn)
+    m = max(1, size // 5)   # side margin
+    if direction == "up":
+        tri = QPolygon([QPoint(m, size - m), QPoint(size - m, size - m), QPoint(size // 2, m)])
+    else:
+        tri = QPolygon([QPoint(m, m), QPoint(size - m, m), QPoint(size // 2, size - m)])
+    p.drawPolygon(tri)
     p.end()
-
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
     pix.save(tmp.name, "PNG")
@@ -363,13 +354,18 @@ def _make_updown_arrow_path(color_hex: str, size: int = 14) -> str:
 
 
 def _make_theme_icon(dark_mode: bool, size: int = 18) -> QIcon:
-    """Draw a sun (light mode) or crescent-moon (dark mode) icon."""
+    """Sun (switch to dark) or moon (switch to light) via QtAwesome; falls back to hand-drawn."""
+    if _QTA:
+        # When currently in dark mode show sun (switch to light); when light show moon (switch to dark)
+        if dark_mode:
+            return qta.icon("fa5s.sun", color="#F59E0B")
+        else:
+            return qta.icon("fa5s.moon", color="#7C8DB5")
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     if dark_mode:
-        # Crescent moon — filled circle with bite taken out
         color = QColor("#FFC107")
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(color))
@@ -378,7 +374,6 @@ def _make_theme_icon(dark_mode: bool, size: int = 18) -> QIcon:
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
         p.drawEllipse(5, 1, size - 4, size - 4)
     else:
-        # Sun — circle with rays
         color = QColor("#F59E0B")
         cx, cy, r = size // 2, size // 2, size // 2 - 4
         p.setPen(Qt.PenStyle.NoPen)
@@ -390,12 +385,10 @@ def _make_theme_icon(dark_mode: bool, size: int = 18) -> QIcon:
         import math
         for i in range(8):
             angle = math.radians(i * 45)
-            inner = r + 2
-            outer = r + 5
-            x1 = int(cx + inner * math.cos(angle))
-            y1 = int(cy + inner * math.sin(angle))
-            x2 = int(cx + outer * math.cos(angle))
-            y2 = int(cy + outer * math.sin(angle))
+            x1 = int(cx + (r + 2) * math.cos(angle))
+            y1 = int(cy + (r + 2) * math.sin(angle))
+            x2 = int(cx + (r + 5) * math.cos(angle))
+            y2 = int(cy + (r + 5) * math.sin(angle))
             p.drawLine(x1, y1, x2, y2)
     p.end()
     return QIcon(pix)
@@ -484,8 +477,9 @@ class _ChannelCombo(QWidget):
         self._items: list[str] = []
         self._current: int = 0
         self._popup: "QFrame | None" = None
+        self._popup_row_widgets: list["QWidget"] = []  # parallel to _items, tracks row widgets
         self._close_others_cb = None  # set by ScopeWindow to enforce singleton popup
-        self._toast_cb = None         # set by ScopeWindow to show remove notifications
+        self._toast_cb = None         # set by ScopeWindow to show add/remove notifications
         self._build()
 
     # ── appearance ────────────────────────────────────────────────
@@ -610,16 +604,44 @@ class _ChannelCombo(QWidget):
         popup.setObjectName("sc_combo_popup")
         popup.setFrameShape(QFrame.Shape.StyledPanel)
         self._popup = popup
-        self._popup_lay = QVBoxLayout(popup)
-        self._popup_lay.setContentsMargins(2, 2, 2, 2)
-        self._popup_lay.setSpacing(1)
+
+        outer_lay = QVBoxLayout(popup)
+        outer_lay.setContentsMargins(2, 2, 2, 2)
+        outer_lay.setSpacing(0)
+
+        # Scrollable rows container — capped at 8 rows before scroll kicks in
+        from PySide6.QtWidgets import QScrollArea
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setObjectName("sc_combo_popup_scroll")
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setWidgetResizable(True)
+
+        self._rows_container = QWidget()
+        self._rows_container.setObjectName("sc_combo_popup_rows")
+        self._popup_lay = QVBoxLayout(self._rows_container)
+        self._popup_lay.setContentsMargins(0, 0, 0, 0)
+        self._popup_lay.setSpacing(0)
+        self._scroll_area.setWidget(self._rows_container)
+        outer_lay.addWidget(self._scroll_area)
+
         self._rebuild_popup_rows()
 
         gp = self._frame.mapToGlobal(self._frame.rect().bottomLeft())
         popup.move(gp)
-        popup.setFixedWidth(max(self._frame.width(), 150))
+        popup_w = max(self._frame.width(), 160)
+        popup.setFixedWidth(popup_w)
+
+        # Height: natural size capped at 8 rows (~32px each) + 4px padding
+        row_h = 30
+        max_rows = 8
+        n = len(self._items)
+        natural_h = n * row_h + 4
+        popup.setFixedHeight(min(natural_h, max_rows * row_h + 4))
         popup.show()
-        popup.adjustSize()
 
     def _rebuild_popup_rows(self):
         if not self._popup:
@@ -630,12 +652,13 @@ class _ChannelCombo(QWidget):
             item = lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self._popup_row_widgets = []
 
         for idx, name in enumerate(self._items):
             row = QWidget()
             row.setObjectName("sc_combo_row")
             rl = QHBoxLayout(row)
-            rl.setContentsMargins(4, 1, 2, 1)
+            rl.setContentsMargins(4, 2, 4, 2)
             rl.setSpacing(4)
 
             lbl = QPushButton(name)
@@ -663,32 +686,64 @@ class _ChannelCombo(QWidget):
                 rl.addWidget(spacer)
 
             lay.addWidget(row)
+            self._popup_row_widgets.append(row)
 
         if self._popup:
-            self._popup.adjustSize()
+            # recompute height in case rows were added/removed
+            row_h = 30
+            n = len(self._items)
+            natural_h = n * row_h + 4
+            self._popup.setFixedHeight(min(natural_h, 8 * row_h + 4))
 
     def _select(self, index: int):
-        self._close_popup()
         old = self._current
+        name = self._items[index] if 0 <= index < len(self._items) else ""
+        self._close_popup()
         self._current = index
         self._refresh_display()
         if old != self._current:
             self.currentIndexChanged.emit(self._current)
+            if self._toast_cb and name and name not in self._PROTECTED:
+                self._toast_cb(f"Channel set to '{name}'", "ok")
 
     def _remove_from_popup(self, index: int):
         name = self._items[index] if 0 <= index < len(self._items) else ""
         if name in self._PROTECTED:
             return
-        # remove item without closing popup
+        # surgical removal: hide and schedule delete of only the affected row widget
+        if 0 <= index < len(self._popup_row_widgets):
+            row_widget = self._popup_row_widgets.pop(index)
+            self._popup_lay.removeWidget(row_widget)
+            row_widget.hide()
+            row_widget.deleteLater()
+            # re-wire click indices for rows that shifted down
+            for new_idx in range(index, len(self._popup_row_widgets)):
+                w = self._popup_row_widgets[new_idx]
+                btns = w.findChildren(QPushButton)
+                if btns:
+                    try:
+                        btns[0].clicked.disconnect()
+                    except Exception:
+                        pass
+                    btns[0].clicked.connect(
+                        lambda checked=False, i=new_idx: self._select(i))
+                if len(btns) > 1:
+                    try:
+                        btns[1].clicked.disconnect()
+                    except Exception:
+                        pass
+                    btns[1].clicked.connect(
+                        lambda checked=False, i=new_idx: self._remove_from_popup(i))
+            if self._popup:
+                n = len(self._popup_row_widgets)
+                self._popup.setFixedHeight(min(n * 30 + 4, 8 * 30 + 4))
         self._items.pop(index)
         if self._current >= len(self._items):
             self._current = max(0, len(self._items) - 1)
         self._refresh_display()
         self.currentIndexChanged.emit(self._current)
-        # rebuild popup rows in place — stays open
-        self._rebuild_popup_rows()
         if self._toast_cb and name:
-            self._toast_cb(f"Variable '{name}' removed", "info")
+            self._toast_cb(f"Variable '{name}' removed from channel", "info")
 
     def hideEvent(self, event):
         self._close_popup()
@@ -982,18 +1037,18 @@ class ScopeWindow(QDialog):
         self._btn_dark.setObjectName("sc_btn_compact")
         self._btn_dark.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_dark.setToolTip("Toggle dark / light mode  [Ctrl+Shift+D]")
-        self._btn_dark.setFixedSize(20, 20)
-        self._btn_dark.setIcon(_make_theme_icon(dark_mode=False))
-        self._btn_dark.setIconSize(QSize(13, 13))
+        self._btn_dark.setFixedSize(28, 28)
+        self._btn_dark.setIcon(_make_theme_icon(dark_mode=self._is_dark(_get_palette())))
+        self._btn_dark.setIconSize(QSize(16, 16))
         self._btn_dark.clicked.connect(self._on_dark_clicked)
         ch_hdr.addWidget(self._btn_dark)
         self._btn_compact = QPushButton()
         self._btn_compact.setObjectName("sc_btn_compact")
         self._btn_compact.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_compact.setToolTip("Maximize / Restore  [Ctrl+M]")
-        self._btn_compact.setFixedSize(20, 20)
-        self._btn_compact.setIcon(_make_maximize_icon("#555555"))
-        self._btn_compact.setIconSize(QSize(13, 13))
+        self._btn_compact.setFixedSize(28, 28)
+        self._btn_compact.setIcon(_make_maximize_icon("#6B7280"))
+        self._btn_compact.setIconSize(QSize(16, 16))
         self._btn_compact.clicked.connect(self._on_compact_clicked)
         ch_hdr.addWidget(self._btn_compact)
         panel_lay.addLayout(ch_hdr)
@@ -1510,9 +1565,12 @@ class ScopeWindow(QDialog):
         POPUP_BORDER = "#3D3D5C" if dark else BORDER
         POPUP_HOVER  = "#2A2A44" if dark else RED_BG
 
-        # generate ▲▼ arrow image for combo drop-down
-        arrow_color = "#888888" if not dark else "#AAAAAA"
-        _arrow_path = _make_updown_arrow_path(arrow_color, size=12)
+        # generate arrow images for combo drop-down and spinbox buttons
+        arrow_color  = "#888888" if not dark else "#AAAAAA"
+        spin_color   = TEXT2
+        _arrow_path  = _make_arrow_png("down", arrow_color, size=12)
+        _spin_up_path   = _make_arrow_png("up",   spin_color, size=8)
+        _spin_down_path = _make_arrow_png("down", spin_color, size=8)
 
         # graph grid
         grid_color = "#3A3A5C" if dark else "#E8EAF0"
@@ -1854,8 +1912,8 @@ QPushButton#sc_combo_row_rem:hover {{
     background: {BG};
 }}
 #sc_dialog QDoubleSpinBox#sc_spinbox::down-button:hover {{ background: {RED_BG}; border-color: {RED}; }}
-#sc_dialog QDoubleSpinBox#sc_spinbox::up-arrow   {{ width: 8px; height: 8px; }}
-#sc_dialog QDoubleSpinBox#sc_spinbox::down-arrow {{ width: 8px; height: 8px; }}
+#sc_dialog QDoubleSpinBox#sc_spinbox::up-arrow   {{ width: 8px; height: 8px; image: url({_spin_up_path}); }}
+#sc_dialog QDoubleSpinBox#sc_spinbox::down-arrow {{ width: 8px; height: 8px; image: url({_spin_down_path}); }}
 
 /* ── Checkboxes ──────────────────────────────────────────────── */
 #sc_dialog QCheckBox#sc_checkbox {{
@@ -1956,14 +2014,17 @@ QPushButton#sc_combo_row_rem:hover {{
 
 /* ── Live values strip ───────────────────────────────────────── */
 #sc_dialog QFrame#sc_live_strip {{
-    background: {INPUT_BG};
+    background: {CARD};
     border-top: 1px solid {BORDER};
+    padding: 2px 0px;
 }}
 #sc_dialog QLabel#sc_live_val {{
     font-size: 11px;
     font-family: "Consolas", monospace;
     font-weight: 600;
+    color: {TEXT};
     background: transparent;
+    padding: 0px 4px;
 }}
 #sc_dialog QLabel#sc_live_badge_live {{
     font-size: 10px;
@@ -2126,13 +2187,18 @@ QDialog QLineEdit#sc_combo {{
 """
         self.setStyleSheet(qss)
 
-        # dark mode button icon reflects current theme
+        # dark/light button icon and tooltip reflect current theme
+        self._btn_dark.setIcon(_make_theme_icon(dark_mode=dark))
+        self._btn_dark.setIconSize(QSize(16, 16))
         if dark:
-            self._btn_dark.setText("Light")
             self._btn_dark.setToolTip("Switch to light mode  [Ctrl+Shift+D]")
         else:
-            self._btn_dark.setText("Dark")
             self._btn_dark.setToolTip("Switch to dark mode  [Ctrl+Shift+D]")
+
+        # re-apply per-channel colors on live strip labels so they survive theme toggle
+        if hasattr(self, '_live_labels'):
+            for i, lbl in enumerate(self._live_labels):
+                lbl.setStyleSheet(f"color: {CHANNEL_COLORS[i]};")
 
         # refresh ELF button icon for current theme
         from PySide6.QtCore import QSize as _QS2
@@ -2707,14 +2773,14 @@ QDialog QLineEdit#sc_combo {{
             self._restore_geometry = self.geometry()
             self.showMaximized()
             self._is_maximized = True
-            self._btn_compact.setIcon(_make_restore_icon("#555555"))
+            self._btn_compact.setIcon(_make_restore_icon("#6B7280"))
             self._btn_compact.setToolTip("Restore window  [Ctrl+M]")
         else:
             self.showNormal()
             if self._restore_geometry is not None:
                 self.setGeometry(self._restore_geometry)
             self._is_maximized = False
-            self._btn_compact.setIcon(_make_maximize_icon("#555555"))
+            self._btn_compact.setIcon(_make_maximize_icon("#6B7280"))
             self._btn_compact.setToolTip("Maximize / Restore  [Ctrl+M]")
 
     def _on_dark_clicked(self):
@@ -2799,29 +2865,50 @@ QDialog QLineEdit#sc_combo {{
         self.canvas.draw_idle()
 
     def _on_scroll_zoom(self, event):
-        """Scroll wheel zooms X axis anchored to cursor — no translation."""
-        if event.inaxes is not self.ax or event.xdata is None:
+        """Scroll wheel zooms axes anchored to cursor.
+        Plain wheel  → X axis zoom + Y autoscale to visible data.
+        Shift+wheel  → Y axis zoom only, anchored at cursor Y.
+        """
+        if event.inaxes is not self.ax:
             return
         factor = 0.75 if event.button == 'up' else 1.0 / 0.75
-        x0, x1 = self.ax.get_xlim()
-        xc = event.xdata
-        # Scale span around cursor: left and right distances scale equally
-        new_xlim = (xc - (xc - x0) * factor, xc + (x1 - xc) * factor)
-        # Clamp zoom-out to full data range
-        data_xlim = self._data_xlim
-        if data_xlim is not None and event.button != 'up':
-            if (new_xlim[1] - new_xlim[0]) > (data_xlim[1] - data_xlim[0]):
-                new_xlim = data_xlim
-        self.ax.set_xlim(new_xlim)
-        self._autoscale_y_to_view()
+
+        # detect Shift modifier
+        shift_held = (event.key is not None and 'shift' in str(event.key).lower())
+
+        if shift_held and event.ydata is not None:
+            # Y-only zoom anchored at cursor — unlock any Y lock first
+            self._ylim_locked = None
+            if hasattr(self, '_chk_ylock') and self._chk_ylock.isChecked():
+                self._chk_ylock.setChecked(False)
+            y0, y1 = self.ax.get_ylim()
+            yc = event.ydata
+            new_ylim = (yc - (yc - y0) * factor, yc + (y1 - yc) * factor)
+            self.ax.set_ylim(new_ylim)
+        else:
+            if event.xdata is None:
+                return
+            x0, x1 = self.ax.get_xlim()
+            xc = event.xdata
+            new_xlim = (xc - (xc - x0) * factor, xc + (x1 - xc) * factor)
+            # Clamp zoom-out to full data range
+            data_xlim = self._data_xlim
+            if data_xlim is not None and event.button != 'up':
+                if (new_xlim[1] - new_xlim[0]) > (data_xlim[1] - data_xlim[0]):
+                    new_xlim = data_xlim
+            self.ax.set_xlim(new_xlim)
+            # Y autoscale to visible X window (unless Y is locked)
+            if not self._ylim_locked:
+                self._autoscale_y_to_view()
+            # RT: if user scrolled forward to live edge, return to live view
+            if self._realtime_running and self._rt_panned and self._rt_t0 is not None:
+                buf_t_max_s = time.time() - self._rt_t0
+                if buf_t_max_s > 0 and new_xlim[1] >= buf_t_max_s * 0.97:
+                    self._rt_panned = False
+                    QTimer.singleShot(0, self._rt_update_live_badge)
+
         self._blit_bg = None
         self.canvas.draw_idle()
-        # RT: if user scrolled forward to live edge, return to live view
-        if self._realtime_running and self._rt_panned and self._rt_t0 is not None:
-            buf_t_max_s = time.time() - self._rt_t0
-            if buf_t_max_s > 0 and new_xlim[1] >= buf_t_max_s * 0.97:
-                self._rt_panned = False
-                QTimer.singleShot(0, self._rt_update_live_badge)
 
     def _on_pan_motion(self, event):
         """Right-click drag pan using pixel coordinates — no drift."""

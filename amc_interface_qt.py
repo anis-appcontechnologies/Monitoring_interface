@@ -1465,25 +1465,34 @@ class AMCMainWindow(QMainWindow):
         )
 
     def _port_watch_tick(self):
-        """Runs every 2s. Detects new ports and pulses the refresh button; auto-connects to remembered port."""
+        """Runs every 2 s. Detects USB plug/unplug and keeps the port combo in sync.
+        Never auto-connects — the user must press Connect themselves."""
         current_ports = set(p.strip().split(" — ")[0].strip() for p in self._list_serial_ports())
-        new_ports = current_ports - self._known_ports
-        if self._known_ports and new_ports:
-            self._pulse_refresh_btn()
-            self._show_toast(f"New device detected: {', '.join(sorted(new_ports))}", "info")
-        self._known_ports = current_ports
+        new_ports     = current_ports - self._known_ports
+        removed_ports = self._known_ports - current_ports
 
-        if self.serial.is_open or not self._last_port \
-                or not self._has_connected_once or self._user_disconnected:
-            return
-        if self._last_port in current_ports:
-            for i in range(self.port_combobox.count()):
-                if self.port_combobox.itemText(i).startswith(self._last_port):
-                    self.port_combobox.setCurrentIndex(i)
-                    break
-            self._log_signal("SYS", f"Auto-reconnecting to {self._last_port}…")
-            self._show_toast(f"Reconnecting to {self._last_port}…", "info")
-            self._on_connect()
+        if new_ports:
+            # Refresh combobox so new port appears immediately
+            self._refresh_ports()
+            self._pulse_refresh_btn()
+            for port in sorted(new_ports):
+                self._show_toast(f"Device connected: {port} — press Connect to use it", "info")
+                self._log_signal("SYS", f"USB device appeared: {port}")
+
+        if removed_ports:
+            # If we're connected to a port that just vanished, trigger graceful disconnect
+            if self.serial.is_open:
+                connected_port = getattr(self, '_last_port', None)
+                if connected_port and connected_port in removed_ports:
+                    self._show_toast(f"Device {connected_port} unplugged — disconnecting", "warn")
+                    self._log_signal("WARN", f"USB device removed: {connected_port}")
+                    self._on_disconnect()
+            # Refresh combobox to remove the gone port
+            self._refresh_ports()
+            for port in sorted(removed_ports):
+                self._log_signal("SYS", f"USB device removed: {port}")
+
+        self._known_ports = current_ports
 
     def _pulse_refresh_btn(self):
         """Flash the refresh button blue→normal 3 times to signal a new port was detected."""
@@ -1691,7 +1700,7 @@ class AMCMainWindow(QMainWindow):
         lay.addWidget(_section_row(2, "Controller Status",
                                    "Real-time controller status and health"))
 
-        # Row 1: status pill | separator | fault pill  (each gets equal half)
+        # Row 1: status pill only — fault gets its own row below so it can never squish siblings
         pills_row = QHBoxLayout()
         pills_row.setSpacing(8)
 
@@ -1701,21 +1710,21 @@ class AMCMainWindow(QMainWindow):
         self.status_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         pills_row.addWidget(self.status_display, 1)
 
-        _vsep = QFrame()
-        _vsep.setFrameShape(QFrame.Shape.VLine)
-        _vsep.setFixedWidth(1)
-        _vsep.setObjectName("v_sep")
-        pills_row.addWidget(_vsep)
+        lay.addLayout(pills_row)
 
+        # Row 2: fault label — isolated row so word-wrap never displaces status widgets
+        fault_row = QHBoxLayout()
+        fault_row.setSpacing(0)
+        fault_row.setContentsMargins(0, 0, 0, 0)
         self.fault_label = QLabel("—  Unknown")
         self.fault_label.setObjectName("fault_unknown")
         self.fault_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.fault_label.setWordWrap(True)
         self.fault_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.fault_label.setMaximumHeight(56)
-        pills_row.addWidget(self.fault_label, 1)
-
-        lay.addLayout(pills_row)
+        self.fault_label.setMinimumHeight(24)
+        self.fault_label.setMaximumHeight(44)
+        fault_row.addWidget(self.fault_label)
+        lay.addLayout(fault_row)
 
         # Clear Fault button — right-aligned below the pills
         btn_row = QHBoxLayout()
@@ -2350,6 +2359,16 @@ class AMCMainWindow(QMainWindow):
         self.fault_label.setText("—  Unknown")
         self.fault_label.setObjectName("fault_unknown")
         self.fault_label.setStyle(self.fault_label.style())
+
+        # If the port is no longer present in the system, clear the combo selection
+        # so the user sees they are fully disconnected (not just "paused")
+        try:
+            current_text = self.port_combobox.currentText().strip().split(" — ")[0].strip()
+            available = set(p.strip().split(" — ")[0].strip() for p in self._list_serial_ports())
+            if current_text and current_text not in available:
+                self.port_combobox.setCurrentIndex(-1)
+        except Exception:
+            pass
 
         self._status_card_frame.setStyleSheet("")
         self.clear_button.setEnabled(False)
