@@ -70,7 +70,7 @@ from PySide6.QtGui import (
     QFont, QColor, QIcon, QPixmap, QPainter, QPen, QBrush,
     QAction, QPolygon, QKeySequence, QShortcut,
 )
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QGraphicsDropShadowEffect
 
 try:
     import qtawesome as qta
@@ -2806,28 +2806,111 @@ class AMCMainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _show_toast(self, message: str, level: str = "warn"):
-        """Show a non-blocking banner at the top of the window that auto-dismisses."""
-        color_map = {
-            "warn":  (C["orange_bg"], C["orange"],  C["orange_border"]),
-            "error": (C["red_bg"],    C["red"],      C["red_border"]),
-            "ok":    (C["green_bg"],  C["green"],    C["green_border"]),
-            "info":  (C["blue_light"], C["blue"],   C["red_border"]),
+        """Modern stacked toast: icon + message in a rounded pill, drop shadow,
+        slide+fade in/out. Multiple toasts stack vertically without overlap."""
+        # Icon + colors per level
+        spec = {
+            "warn":  ("fa5s.exclamation-triangle", C["orange_bg"], C["orange"],  C["orange_border"]),
+            "error": ("fa5s.times-circle",          C["red_bg"],    C["red"],     C["red_border"]),
+            "ok":    ("fa5s.check-circle",          C["green_bg"],  C["green"],   C["green_border"]),
+            "info":  ("fa5s.info-circle",           C["blue_light"],C["blue"],    C["blue"]),
         }
-        bg, fg, border = color_map.get(level, color_map["warn"])
+        icon_name, bg, fg, border = spec.get(level, spec["warn"])
 
-        toast = QLabel(f"  {message}  ", self)
+        # Container pill
+        toast = QFrame(self)
+        toast.setObjectName("modern_toast")
         toast.setStyleSheet(
-            f"background: {bg}; color: {fg}; "
-            f"border: 1.5px solid {border}; border-radius: 6px; "
-            f"font-size: {_px(12)}px; font-weight: 600; padding: 6px 14px;")
+            f"QFrame#modern_toast {{"
+            f"  background: {bg};"
+            f"  border: 1.5px solid {border};"
+            f"  border-radius: 14px;"
+            f"}}"
+            f"QFrame#modern_toast QLabel {{"
+            f"  background: transparent;"
+            f"  color: {fg};"
+            f"  font-size: {_px(12)}px;"
+            f"  font-weight: 600;"
+            f"}}"
+        )
+
+        # Drop shadow for elevation
+        shadow = QGraphicsDropShadowEffect(toast)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 90))
+        toast.setGraphicsEffect(shadow)
+
+        # Layout: icon + text
+        lay = QHBoxLayout(toast)
+        lay.setContentsMargins(14, 8, 18, 8)
+        lay.setSpacing(10)
+
+        icon_lbl = QLabel()
+        if _QTA:
+            try:
+                icon_lbl.setPixmap(qta.icon(icon_name, color=fg).pixmap(QSize(18, 18)))
+            except Exception:
+                icon_lbl.setText("●")
+        else:
+            icon_lbl.setText("●")
+        lay.addWidget(icon_lbl)
+
+        text_lbl = QLabel(message)
+        text_lbl.setWordWrap(False)
+        lay.addWidget(text_lbl)
+
         toast.adjustSize()
-        tw = toast.sizeHint().width() + 40
-        th = toast.sizeHint().height() + 16
+        tw = toast.sizeHint().width()
+        th = toast.sizeHint().height()
+
+        # Stack: find vertical offset based on currently visible toasts
+        if not hasattr(self, "_toast_stack") or self._toast_stack is None:
+            self._toast_stack = []
+        # purge dead refs
+        self._toast_stack = [t for t in self._toast_stack
+                             if t is not None and not t.isHidden()]
+        y_base = 52
+        y_step = th + 8
+        y = y_base + len(self._toast_stack) * y_step
         x = (self.width() - tw) // 2
-        toast.setGeometry(x, 52, tw, th)
+        toast.setGeometry(x, y, tw, th)
         toast.raise_()
         toast.show()
-        QTimer.singleShot(2800, toast.deleteLater)
+
+        # Slide-in animation (geometry y: y-12 -> y)
+        slide = QPropertyAnimation(toast, b"geometry", toast)
+        slide.setDuration(220)
+        slide.setStartValue(QRect(x, y - 12, tw, th))
+        slide.setEndValue(QRect(x, y, tw, th))
+        slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        slide.start()
+
+        self._toast_stack.append(toast)
+
+        def _dismiss():
+            # Slide-up + delete
+            try:
+                if toast.isHidden():
+                    return
+                out = QPropertyAnimation(toast, b"geometry", toast)
+                out.setDuration(180)
+                cur = toast.geometry()
+                out.setStartValue(cur)
+                out.setEndValue(QRect(cur.x(), cur.y() - 10, cur.width(), cur.height()))
+                out.setEasingCurve(QEasingCurve.Type.InCubic)
+                out.finished.connect(toast.hide)
+                out.finished.connect(toast.deleteLater)
+                out.start()
+                if toast in self._toast_stack:
+                    self._toast_stack.remove(toast)
+            except Exception:
+                try:
+                    toast.deleteLater()
+                except Exception:
+                    pass
+
+        QTimer.singleShot(3000, _dismiss)
 
     def _on_connect(self):
         port = self.port_combobox.currentText().strip().split(" — ")[0].strip()

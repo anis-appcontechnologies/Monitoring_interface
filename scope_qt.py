@@ -674,17 +674,25 @@ class _ChannelCombo(QWidget):
             rl.addWidget(lbl)
 
             if name not in self._PROTECTED:
-                rem = QPushButton("−")
+                rem = QPushButton()
                 rem.setObjectName("sc_combo_row_rem")
-                rem.setFixedSize(20, 20)
+                rem.setFixedSize(22, 22)
                 rem.setCursor(Qt.CursorShape.PointingHandCursor)
                 rem.setToolTip(f"Remove '{name}'")
+                if _QTA:
+                    try:
+                        rem.setIcon(qta.icon("fa5s.trash-alt", color="white"))
+                        rem.setIconSize(QSize(11, 11))
+                    except Exception:
+                        rem.setText("−")
+                else:
+                    rem.setText("−")
                 rem.clicked.connect(
                     lambda checked=False, i=idx: self._remove_from_popup(i))
                 rl.addWidget(rem)
             else:
                 spacer = QWidget()
-                spacer.setFixedSize(20, 20)
+                spacer.setFixedSize(22, 22)
                 rl.addWidget(spacer)
 
             lay.addWidget(row)
@@ -706,7 +714,9 @@ class _ChannelCombo(QWidget):
         if old != self._current:
             self.currentIndexChanged.emit(self._current)
             if self._toast_cb and name and name not in self._PROTECTED:
-                self._toast_cb(f"Channel set to '{name}'", "ok")
+                self._toast_cb(
+                    f"Now displaying '{name}' on this channel", "ok"
+                )
 
     def _remove_from_popup(self, index: int):
         name = self._items[index] if 0 <= index < len(self._items) else ""
@@ -745,7 +755,9 @@ class _ChannelCombo(QWidget):
         self._refresh_display()
         self.currentIndexChanged.emit(self._current)
         if self._toast_cb and name:
-            self._toast_cb(f"Variable '{name}' removed from channel", "warn")
+            self._toast_cb(
+                f"Removed '{name}' from this channel's variable list", "error"
+            )
 
     def hideEvent(self, event):
         self._close_popup()
@@ -867,7 +879,10 @@ class _ElfVarPickerDialog(QDialog):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             if self._toast_cb:
-                self._toast_cb(f"Variable '{name}' removed from Ch{self._ch_idx + 1}", "warn")
+                self._toast_cb(
+                    f"Removed '{name}' from Channel {self._ch_idx + 1} variables",
+                    "error",
+                )
         else:
             # add to combo
             self._combo.addItem(name)
@@ -876,7 +891,10 @@ class _ElfVarPickerDialog(QDialog):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             if self._toast_cb:
-                self._toast_cb(f"Variable '{name}' added to Ch{self._ch_idx + 1}", "ok")
+                self._toast_cb(
+                    f"Added '{name}' to Channel {self._ch_idx + 1} variables",
+                    "ok",
+                )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1884,21 +1902,25 @@ QPushButton#sc_combo_row_lbl:hover {{
     color: {RED};
 }}
 
-/* row [−] remove button — red pill */
+/* row [−] remove button — modern solid-red circular pill */
 QPushButton#sc_combo_row_rem {{
-    background: {RED_BG};
-    color: {RED};
-    border: 1px solid {RED_BDR};
-    border-radius: 10px;
-    font-size: 14px;
-    font-weight: 700;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                 stop:0 {RED}, stop:1 {RED_DARK});
+    color: white;
+    border: 1px solid {RED_DARK};
+    border-radius: 11px;
+    font-size: 13px;
+    font-weight: 800;
     padding: 0px;
 }}
 QPushButton#sc_combo_row_rem:hover {{
-    background: {RED};
-    color: white;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                 stop:0 #E74A50, stop:1 {RED});
     border-color: {RED_DARK};
-    border-radius: 10px;
+}}
+QPushButton#sc_combo_row_rem:pressed {{
+    background: {RED_DARK};
+    border-color: {RED_DARK};
 }}
 
 /* ── Spin boxes ──────────────────────────────────────────────── */
