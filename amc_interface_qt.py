@@ -544,8 +544,8 @@ QLineEdit:focus  {{
 }}
 QLineEdit:disabled {{ background: {p['bg']}; color: {p['faint']}; border-color: {p['border']}; }}
 QLineEdit[readOnly="true"] {{
-    background: {p['bg']};
-    color: {p['muted']};
+    background: {p['input_bg']};
+    color: {p['text2']};
     border: 1px solid {p['border']};
     font-style: italic;
 }}
@@ -1673,6 +1673,7 @@ class AMCMainWindow(QMainWindow):
         self.fault_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.fault_label.setWordWrap(True)
         self.fault_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.fault_label.setMaximumHeight(56)
         pills_row.addWidget(self.fault_label, 1)
 
         lay.addLayout(pills_row)
@@ -2498,7 +2499,7 @@ class AMCMainWindow(QMainWindow):
     def _on_sensor_btn_toggled(self, checked: bool, option: str):
         if not checked:
             return
-        self._mode_lock_until = time.time() + 3.5
+        self._mode_lock_until = time.time() + 2.0
         if not self.serial.is_open:
             return
         cmd_str = self._SENSOR_CMD.get(option)
@@ -2527,7 +2528,7 @@ class AMCMainWindow(QMainWindow):
         # Command format matches reference: s stop / s contr 1 / s contr 2 / s contr 3
         mode_cmd = {"Stop": "s stop", "Voltage": "s contr 1",
                     "Current": "s contr 2", "Speed": "s contr 3"}
-        self._mode_lock_until = time.time() + 3.5
+        self._mode_lock_until = time.time() + 2.0
         self.previous_control_mode = self.current_control_mode
         self.current_control_mode  = option
         self._set_mode_ui(option)
@@ -2627,7 +2628,7 @@ class AMCMainWindow(QMainWindow):
             entry = self.set_value_entries[idx]
             entry.setText(confirmed_value)
             prev = entry.styleSheet()
-            entry.setStyleSheet("background: #C8F7C5;")
+            entry.setStyleSheet(f"background: {C['green_bg']}; color: {C['text']};")
             QTimer.singleShot(400, lambda e=entry, s=prev: e.setStyleSheet(s))
         except Exception:
             pass
@@ -2635,7 +2636,7 @@ class AMCMainWindow(QMainWindow):
     def _flash_read_entry(self, entry: QLineEdit, idx: int = -1):
         # Border color-only flash (same 1px width → zero reflow). Light green = new value arrived.
         entry.setStyleSheet(
-            "QLineEdit#read_resp_entry { border: 1px solid " + C['green_border'] + "; border-left: 3px solid " + C['green'] + "; color: " + C['text'] + "; }")
+            f"QLineEdit#read_resp_entry {{ border: 1px solid {C['green_border']}; border-left: 3px solid {C['green']}; color: {C['text']}; background: {C['input_bg']}; }}")
         QTimer.singleShot(350, lambda e=entry: e.setStyleSheet(""))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -2754,7 +2755,7 @@ class AMCMainWindow(QMainWindow):
             self.response_q.put(("disconnect", None, None))
 
     def _on_sensor_combo_changed(self, idx: int):
-        self._mode_lock_until = time.time() + 3.5
+        self._mode_lock_until = time.time() + 2.0
         if not self.serial.is_open:
             return
         mode_map = {0: "s sens 1", 1: "s sens 2", 2: "s sens 3", 3: "s sens 4"}
@@ -2766,7 +2767,7 @@ class AMCMainWindow(QMainWindow):
         self._on_sensor_combo_changed(btn_id - 1)
 
     def _on_control_combo_changed(self, idx: int):
-        self._mode_lock_until = time.time() + 3.5
+        self._mode_lock_until = time.time() + 2.0
         modes = {0: ("Stop", "stop"), 1: ("Voltage", "contr 1"),
                  2: ("Current", "contr 2"), 3: ("Speed", "contr 3")}
         mode_name, cmd_val = modes.get(idx, ("Stop", "stop"))
