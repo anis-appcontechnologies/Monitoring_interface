@@ -732,6 +732,24 @@ QLabel#cmd_notice {{
     font-style: italic; padding: 4px 0px; background: transparent;
 }}
 
+/* ── Combined view button ── */
+QPushButton#btn_combined_view {{
+    background: {p['input_bg']}; color: {p['text']};
+    border: 1px solid {p['border']}; border-radius: 6px;
+    font-size: {fs(10)}px; font-weight: 600;
+    padding: 3px 10px; min-height: 26px;
+}}
+QPushButton#btn_combined_view:hover {{
+    background: {p['blue_light']}; border-color: {p['blue']};
+    color: {p['blue']};
+}}
+QPushButton#btn_combined_view:checked {{
+    background: {p['blue']}; color: #FFFFFF; border-color: {p['blue_dark']};
+}}
+QPushButton#btn_combined_view:checked:hover {{
+    background: {p['blue_dark']};
+}}
+
 /* ── Splitter handle ── */
 QSplitter::handle {{
     background: {p['border']}; width: 6px;
@@ -1338,6 +1356,11 @@ class AMCMainWindow(QMainWindow):
         self.setMinimumSize(900, 560)
         QTimer.singleShot(50, self._fit_to_screen)
         QShortcut(QKeySequence("Ctrl+Shift+D"), self).activated.connect(self._toggle_theme)
+        QShortcut(QKeySequence("Ctrl+Shift+M"), self).activated.connect(self._toggle_combined_view)
+
+        # Restore combined view preference from last session
+        if _s.value("combined_view", False, type=bool):
+            QTimer.singleShot(300, self._enter_combined_view)
 
         # Port-watch: scans every 2s, auto-connects when remembered port appears
         self._port_watch_timer = QTimer(self)
@@ -1399,6 +1422,7 @@ class AMCMainWindow(QMainWindow):
         left_col.setMinimumWidth(520)
         self._log_panel.setMinimumWidth(300)
 
+        # Inner splitter: interface (left) | log panel (right)
         self._splitter = _GripSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("scroll_inner")
         self._splitter.setContentsMargins(10, 4, 10, 4)
@@ -1409,7 +1433,22 @@ class AMCMainWindow(QMainWindow):
         self._splitter.setCollapsible(1, False)
         self._splitter.setSizes([680, 420])
 
-        root.addWidget(self._splitter, 1)
+        # Outer splitter: inner (left) | scope embed pane (right, hidden by default)
+        self._outer_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._outer_splitter.setHandleWidth(6)
+        self._outer_splitter.addWidget(self._splitter)
+        # Placeholder for embedded scope body — filled by _toggle_combined_view
+        self._scope_embed_pane = QWidget()
+        self._scope_embed_pane.setMinimumWidth(400)
+        self._scope_embed_pane.setVisible(False)
+        _sep_lay = QVBoxLayout(self._scope_embed_pane)
+        _sep_lay.setContentsMargins(0, 0, 0, 0)
+        self._outer_splitter.addWidget(self._scope_embed_pane)
+        self._outer_splitter.setCollapsible(0, False)
+        self._outer_splitter.setCollapsible(1, False)
+        self._combined_view_active = False
+
+        root.addWidget(self._outer_splitter, 1)
 
         # Status bar
         sb = self.statusBar()
@@ -1531,6 +1570,16 @@ class AMCMainWindow(QMainWindow):
         self._theme_btn.setToolTip("Toggle dark / light mode  [Ctrl+Shift+D]")
         self._theme_btn.clicked.connect(self._toggle_theme)
         lay.addWidget(self._theme_btn)
+
+        # Combined view toggle — embeds scope panel beside main interface
+        self._combined_btn = QPushButton("⊞  Combined View")
+        self._combined_btn.setObjectName("btn_combined_view")
+        self._combined_btn.setToolTip(
+            "Show interface + oscilloscope side-by-side  [Ctrl+Shift+M]")
+        self._combined_btn.setCheckable(True)
+        self._combined_btn.setChecked(False)
+        self._combined_btn.clicked.connect(self._toggle_combined_view)
+        lay.addWidget(self._combined_btn)
 
         return bar
 
@@ -2491,6 +2540,73 @@ class AMCMainWindow(QMainWindow):
             except RuntimeError:
                 self._scope_window = None
 
+    # ── Combined view ────────────────────────────────────────────────────────
+
+    def _toggle_combined_view(self):
+        """Toggle split-screen: embed scope body next to interface or release it."""
+        if self._combined_view_active:
+            self._exit_combined_view()
+        else:
+            self._enter_combined_view()
+
+    def _enter_combined_view(self):
+        # Ensure scope window exists
+        if not ScopeWindow:
+            self._show_toast("Scope module not available.", "error")
+            self._combined_btn.setChecked(False)
+            return
+        if not hasattr(self, '_scope_window') or self._scope_window is None:
+            dlg = ScopeWindow(self, self.serial)
+            dlg.setWindowModality(Qt.WindowModality.NonModal)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            dlg.finished.connect(lambda: setattr(self, '_scope_window', None))
+            self._scope_window = dlg
+
+        scope = self._scope_window
+        body = scope.detach_body()
+
+        # Clear placeholder layout and insert scope body
+        pane_lay = self._scope_embed_pane.layout()
+        while pane_lay.count():
+            pane_lay.takeAt(0)
+        pane_lay.addWidget(body)
+        body.show()
+
+        self._scope_embed_pane.setVisible(True)
+        total = self.width()
+        self._outer_splitter.setSizes([total // 2, total // 2])
+
+        self._combined_view_active = True
+        self._combined_btn.setText("⊟  Separate View")
+        self._combined_btn.setToolTip("Switch back to separate scope window  [Ctrl+Shift+M]")
+        QSettings("Appcon Technologies", "AMC Interface").setValue("combined_view", True)
+        self._show_toast("Combined view — drag the divider to resize", "info")
+
+    def _exit_combined_view(self):
+        scope = getattr(self, '_scope_window', None)
+        if scope is None:
+            self._scope_embed_pane.setVisible(False)
+            self._combined_view_active = False
+            self._combined_btn.setText("⊞  Combined View")
+            self._combined_btn.setChecked(False)
+            return
+
+        # Remove body from embed pane
+        pane_lay = self._scope_embed_pane.layout()
+        while pane_lay.count():
+            pane_lay.takeAt(0)
+        self._scope_embed_pane.setVisible(False)
+
+        # Reattach body to standalone dialog
+        scope.attach_body()
+
+        self._combined_view_active = False
+        self._combined_btn.setText("⊞  Combined View")
+        self._combined_btn.setToolTip("Show interface + oscilloscope side-by-side  [Ctrl+Shift+M]")
+        self._combined_btn.setChecked(False)
+        QSettings("Appcon Technologies", "AMC Interface").setValue("combined_view", False)
+        self._show_toast("Switched to separate scope window", "info")
+
     def _update_control_combo_style(self, mode):
         pass  # replaced by radio button checked states
 
@@ -3357,6 +3473,10 @@ class AMCMainWindow(QMainWindow):
     def open_monitoring(self):
         if not ScopeWindow:
             _ModernModal.error(self, "Module not found", "scope_qt.py not found.")
+            return
+        # If combined view is active, exit it first then show standalone
+        if self._combined_view_active:
+            self._exit_combined_view()
             return
         # Non-modal: keep a reference so it doesn't get garbage-collected
         if hasattr(self, '_scope_window') and self._scope_window is not None:
