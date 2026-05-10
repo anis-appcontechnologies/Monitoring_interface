@@ -3723,6 +3723,11 @@ QDialog QLineEdit#sc_combo {{
             self.serial_manager.scope_active.clear()
             self._realtime_running = False
             self._rt_lines = {}   # reset so next RT session rebuilds axes on first frame
+            # Re-enable autoscale for single-shot / zoom-to-fit after RT
+            try:
+                self.ax.set_autoscale_on(True)
+            except Exception:
+                pass
             self._set_status("Real-time stopped — last frame preserved")
             self._sig_update_buttons.emit()
             QTimer.singleShot(0, lambda: self._live_strip.setVisible(False))
@@ -4078,9 +4083,14 @@ QDialog QLineEdit#sc_combo {{
         self._last_plot_data = (ch_data, t_axis, cfg)
         self._btn_export.setEnabled(True)
 
-        # Seed RT fast-path: reuse these Line2D objects on subsequent RT frames
+        # Seed RT fast-path: reuse these Line2D objects on subsequent RT frames.
+        # For RT, disable antialiasing on traces (Bastibe — measurable Agg speedup)
+        # and disable per-frame autoscale (we control limits manually).
         if self._realtime_running:
             self._rt_lines = dict(self._plotted_lines)
+            for line in self._rt_lines.values():
+                line.set_antialiased(False)
+            self.ax.set_autoscale_on(False)
 
     def _do_rt_fast_update(self, ch_data, t_axis, cfg):
         """RT fast-path: update line data without rebuilding axes.
@@ -4098,8 +4108,8 @@ QDialog QLineEdit#sc_combo {{
             samples = ch_data[ch_idx] if ch_idx < len(ch_data) else []
             if samples:
                 s_arr = np.asarray(samples, dtype=np.float32)
-                line.set_xdata(t_arr[:len(s_arr)])
-                line.set_ydata(s_arr)
+                # set_data is the canonical one-call form (matplotlib blitting tutorial)
+                line.set_data(t_arr[:len(s_arr)], s_arr)
                 any_updated = True
                 # Update live labels
                 if self._live_labels and ch_idx < len(self._live_labels):
