@@ -484,6 +484,8 @@ class _ChannelCombo(QWidget):
         self._items: list[str] = []
         self._current: int = 0
         self._popup: "QFrame | None" = None
+        self._close_others_cb = None  # set by ScopeWindow to enforce singleton popup
+        self._toast_cb = None         # set by ScopeWindow to show remove notifications
         self._build()
 
     # ── appearance ────────────────────────────────────────────────
@@ -595,6 +597,9 @@ class _ChannelCombo(QWidget):
 
     def _open_popup(self):
         self._close_popup()
+        # Enforce singleton: close any other channel combo popup first
+        if self._close_others_cb is not None:
+            self._close_others_cb(self)
 
         # FramelessWindowHint + Tool: stays open, doesn't steal focus,
         # won't auto-close on outside click — we manage close ourselves.
@@ -682,6 +687,8 @@ class _ChannelCombo(QWidget):
         self.currentIndexChanged.emit(self._current)
         # rebuild popup rows in place — stays open
         self._rebuild_popup_rows()
+        if self._toast_cb and name:
+            self._toast_cb(f"Variable '{name}' removed", "info")
 
     def hideEvent(self, event):
         self._close_popup()
@@ -701,7 +708,8 @@ class _ElfVarPickerDialog(QDialog):
     Dialog stays open so the user can add/remove multiple variables.
     """
 
-    def __init__(self, parent, ch_idx: int, all_names: list[str], combo: "QComboBox"):
+    def __init__(self, parent, ch_idx: int, all_names: list[str], combo: "QComboBox",
+                 toast_cb=None):
         super().__init__(parent)
         self.setWindowTitle(f"Variables — Ch{ch_idx + 1}")
         self.setMinimumSize(300, 460)
@@ -709,6 +717,7 @@ class _ElfVarPickerDialog(QDialog):
         self._all   = all_names
         self._combo = combo
         self._ch_idx = ch_idx
+        self._toast_cb = toast_cb  # optional callable(message, level)
         # track which names were added during this session (short_name -> row_btn)
         self._row_btns: dict[str, QPushButton] = {}
         self._build()
@@ -800,6 +809,8 @@ class _ElfVarPickerDialog(QDialog):
             btn.setObjectName("sc_btn_elf_plus")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+            if self._toast_cb:
+                self._toast_cb(f"Variable '{name}' removed from Ch{self._ch_idx + 1}", "info")
         else:
             # add to combo
             self._combo.addItem(name)
@@ -807,6 +818,8 @@ class _ElfVarPickerDialog(QDialog):
             btn.setObjectName("sc_btn_elf_minus")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+            if self._toast_cb:
+                self._toast_cb(f"Variable '{name}' added to Ch{self._ch_idx + 1}", "ok")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1069,6 +1082,17 @@ class ScopeWindow(QDialog):
         for combo in self._ch_combos:
             combo.currentIndexChanged.connect(self._on_config_changed)
             combo.currentIndexChanged.connect(lambda _: self._update_sample_counter())
+        # Enforce singleton popup: closing other combos when one opens
+        def _close_others(sender):
+            for cb in self._ch_combos:
+                if cb is not sender:
+                    cb._close_popup()
+        # Wire up toast for inline remove + singleton enforcement
+        main_win = self.parent()
+        _toast = getattr(main_win, '_show_toast', None) if main_win is not None else None
+        for combo in self._ch_combos:
+            combo._close_others_cb = _close_others
+            combo._toast_cb = _toast
 
         # set initial dot colors
         self._update_dot_colors()
@@ -2340,7 +2364,13 @@ QDialog QLineEdit#sc_combo {{
             QMessageBox.information(self, "No ELF loaded",
                                     "Click the chip icon first to load your firmware ELF file.")
             return
-        dlg = _ElfVarPickerDialog(self, ch_idx, _ELF_VARS, self._ch_combos[ch_idx])
+        # Wire toast to AMCMainWindow if available
+        toast_cb = None
+        main_win = self.parent()
+        if main_win is not None and hasattr(main_win, '_show_toast'):
+            toast_cb = main_win._show_toast
+        dlg = _ElfVarPickerDialog(self, ch_idx, _ELF_VARS, self._ch_combos[ch_idx],
+                                  toast_cb=toast_cb)
         dlg.exec()
 
 
@@ -3264,7 +3294,22 @@ QDialog QLineEdit#sc_combo {{
                 ser.reset_input_buffer()
                 ser.write(b"#g recbuf ;\n")
                 logging.info("SCOPE: Sent #g recbuf ; (expecting %d bytes)", expected_bytes)
-                buffer_response = ser.read(expected_bytes)
+                # Expert-style polling loop: up to 5 s, reads in chunks as bytes arrive
+                buffer_response = bytearray()
+                timeout_count = 0
+                timeout_max = 500  # 500 × 10 ms = 5 s
+                while len(buffer_response) < expected_bytes and timeout_count < timeout_max:
+                    available = ser.in_waiting
+                    if available > 0:
+                        to_read = min(available, expected_bytes - len(buffer_response))
+                        chunk = ser.read(to_read)
+                        if chunk:
+                            buffer_response += chunk
+                            timeout_count = 0
+                    else:
+                        timeout_count += 1
+                        time.sleep(0.01)
+                buffer_response = bytes(buffer_response)
                 received = len(buffer_response)
                 leftover = ser.in_waiting
                 if leftover > 0:
@@ -3479,7 +3524,22 @@ QDialog QLineEdit#sc_combo {{
                         ser.reset_input_buffer()
                         ser.write(b"#g recbuf ;\n")
                         logging.info("SCOPE: Sent #g recbuf ; (expecting %d bytes)", expected_bytes)
-                        rt_buf  = ser.read(expected_bytes)
+                        # Expert-style polling loop: up to 5 s, reads in chunks
+                        rt_buf_acc = bytearray()
+                        timeout_count = 0
+                        timeout_max = 500  # 500 × 10 ms = 5 s
+                        while len(rt_buf_acc) < expected_bytes and timeout_count < timeout_max:
+                            available = ser.in_waiting
+                            if available > 0:
+                                to_read = min(available, expected_bytes - len(rt_buf_acc))
+                                chunk = ser.read(to_read)
+                                if chunk:
+                                    rt_buf_acc += chunk
+                                    timeout_count = 0
+                            else:
+                                timeout_count += 1
+                                time.sleep(0.01)
+                        rt_buf = bytes(rt_buf_acc)
                         received = len(rt_buf)
                         leftover = ser.in_waiting
                         if leftover > 0:
@@ -3570,10 +3630,12 @@ QDialog QLineEdit#sc_combo {{
                 self._scroll_lines[ch_idx] = line
 
         self.ax.legend(
-            loc='lower left', bbox_to_anchor=(0.0, 1.01),
-            ncol=max(1, len([l for l in self.ax.lines if l.get_label()])),
-            fontsize=9, facecolor=p['card'], edgecolor=p['border'], labelcolor=p['text'],
-            framealpha=0.95,
+            loc='upper right',
+            ncol=1, fontsize=9,
+            facecolor=p['card'], edgecolor=p['border'], labelcolor=p['text'],
+            framealpha=0.85,
+            borderpad=0.5, handlelength=1.2, handleheight=0.9,
+            handletextpad=0.5,
         )
         self.canvas.draw()
         self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
