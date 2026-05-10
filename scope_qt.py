@@ -1365,7 +1365,16 @@ class ScopeWindow(QDialog):
         status_row.addWidget(self._no_port_frame)
 
         panel_lay.addLayout(status_row)
-        root.addWidget(panel)
+
+        # ── Scope body: wrapper widget so it can be reparented into combined view
+        self._scope_body = QWidget()
+        self._scope_body.setObjectName("sc_body")
+        body_lay = QVBoxLayout(self._scope_body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(4)
+        body_lay.addWidget(panel)
+
+        root.addWidget(self._scope_body, 1)
 
         # ══════════════════════════════════════════════════════════════════════
         # GRAPH PANEL — tall, dominant
@@ -1417,7 +1426,7 @@ class ScopeWindow(QDialog):
         _apply_mono(self._lbl_coords)
         graph_lay.addWidget(self._lbl_coords)
 
-        root.addWidget(graph_frame, 4)
+        body_lay.addWidget(graph_frame, 4)
 
         self._scroll_lines = []
         self._scroll_bg    = None
@@ -3975,6 +3984,24 @@ QDialog QLineEdit#sc_combo {{
     # ══════════════════════════════════════════════════════════════════════════
     #  CLOSE EVENT
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Combined-view API ────────────────────────────────────────────────────
+
+    def detach_body(self) -> "QWidget":
+        """Remove _scope_body from this dialog and return it for embedding.
+        The dialog hides itself; acquisition continues uninterrupted."""
+        self._scope_body.setParent(None)   # type: ignore[arg-type]
+        self.hide()
+        return self._scope_body
+
+    def attach_body(self):
+        """Re-insert _scope_body into this dialog and show it."""
+        layout = self.layout()
+        self._scope_body.setParent(self)
+        layout.insertWidget(0, self._scope_body, 1)
+        self._scope_body.show()
+        self.show()
+        self.raise_()
 
     def closeEvent(self, event):
         self._realtime_running = False
