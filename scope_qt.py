@@ -214,109 +214,74 @@ def _make_restore_icon(color_hex: str, size: int = 16) -> QIcon:
     return QIcon(pix)
 
 
-def _make_elf_icon(size: int = 40, dark: bool = False) -> QIcon:
-    """
-    Crisp ELF file icon. Drawn at 512 px internally then scaled.
-    dark=True → light-on-dark variant for dark UI themes.
-    """
+def _make_elf_icon(size: int = 16, dark: bool = False) -> QIcon:
+    """Monochrome stroke-only ELF/document icon — matches toolbar icon language."""
     from PySide6.QtGui import QPolygonF
     from PySide6.QtCore import QPointF, QRectF
 
-    S   = 512
+    # Render at 4× then scale down for crisp edges at 16 px
+    S = size * 4
     pix = QPixmap(S, S)
     pix.fill(Qt.GlobalColor.transparent)
-    p   = QPainter(pix)
+    p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-    # theme-dependent colors
-    if dark:
-        body_fill    = "#2A2D3E"   # dark navy body
-        fold_fill    = "#3D4255"   # slightly lighter fold
-        outline_col  = "#8892A4"   # muted light-grey outline
-        badge_col    = "#2A5BA8"   # bright blue badge
-        arrow_col    = "#8892A4"   # same as outline
-    else:
-        body_fill    = "#FFFFFF"
-        fold_fill    = "#C5CDD8"
-        outline_col  = "#3C4858"
-        badge_col    = "#1C3F6E"
-        arrow_col    = "#3C4858"
+    stroke_color = QColor("#C8CBD0") if dark else QColor("#4B5563")
+    stroke_w = max(1.0, S * 0.055)
 
-    # geometry constants
-    m    = int(S * 0.06)
-    fold = int(S * 0.24)
+    pen = QPen(stroke_color)
+    pen.setWidthF(stroke_w)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
 
-    # ── document body ─────────────────────────────────────────────
-    body = QPolygonF([
-        QPointF(m,                m),
-        QPointF(S - fold - m,     m),
-        QPointF(S - m,            fold + m),
-        QPointF(S - m,            S - m),
-        QPointF(m,                S - m),
+    # Document margins and fold
+    mg   = S * 0.10
+    fold = S * 0.26
+    l, t, r, b = mg, mg, S - mg, S - mg
+
+    # Document outline (5-point polygon with folded top-right corner)
+    doc = QPolygonF([
+        QPointF(l,          t),
+        QPointF(r - fold,   t),
+        QPointF(r,          t + fold),
+        QPointF(r,          b),
+        QPointF(l,          b),
+        QPointF(l,          t),
     ])
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(QColor(body_fill)))
-    p.drawPolygon(body)
-
-    # folded corner triangle
-    corner = QPolygonF([
-        QPointF(S - fold - m,  m),
-        QPointF(S - fold - m,  fold + m),
-        QPointF(S - m,         fold + m),
-    ])
-    p.setBrush(QBrush(QColor(fold_fill)))
-    p.drawPolygon(corner)
-
-    # document outline
-    outline = QPen(QColor(outline_col))
-    outline.setWidthF(S * 0.038)
-    outline.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
-    outline.setCapStyle(Qt.PenCapStyle.SquareCap)
-    p.setPen(outline)
+    p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPolygon(body)
-    p.drawLine(QPointF(S - fold - m, m),
-               QPointF(S - fold - m, fold + m))
-    p.drawLine(QPointF(S - fold - m, fold + m),
-               QPointF(S - m,        fold + m))
+    p.drawPolyline(doc)
 
-    # ── .ELF badge ────────────────────────────────────────────────
-    bx = m + int(S * 0.04)
-    by = int(S * 0.29)
-    bw = S - bx * 2
-    bh = int(S * 0.24)
-    badge = QRectF(bx, by, bw, bh)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(QColor(badge_col)))
-    p.drawRoundedRect(badge, bh * 0.15, bh * 0.15)
+    # Fold crease lines
+    p.drawLine(QPointF(r - fold, t),       QPointF(r - fold, t + fold))
+    p.drawLine(QPointF(r - fold, t + fold), QPointF(r,       t + fold))
 
-    font = p.font()
-    font.setFamily("Arial")
-    font.setBold(True)
-    font.setPixelSize(int(bh * 0.65))
-    p.setFont(font)
-    p.setPen(QPen(QColor("#FFFFFF")))
-    p.drawText(badge, Qt.AlignmentFlag.AlignCenter, ".ELF")
+    # "ELF" text label — two thin horizontal lines representing text content
+    line_pen = QPen(stroke_color)
+    line_pen.setWidthF(stroke_w * 0.85)
+    line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(line_pen)
+    mid_y = t + (b - t) * 0.48
+    lx1, lx2 = l + S * 0.12, r - fold - S * 0.06
+    p.drawLine(QPointF(lx1, mid_y - S * 0.08), QPointF(lx2, mid_y - S * 0.08))
+    p.drawLine(QPointF(lx1, mid_y + S * 0.08), QPointF(lx2, mid_y + S * 0.08))
 
-    # ── download arrow ────────────────────────────────────────────
-    ap = QPen(QColor(arrow_col))
-    ap.setWidthF(S * 0.048)
-    ap.setCapStyle(Qt.PenCapStyle.RoundCap)
-    ap.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(ap)
-    p.setBrush(Qt.BrushStyle.NoBrush)
+    # Download arrow below the mid section
+    cx     = S * 0.50
+    arr_t  = mid_y + S * 0.20
+    arr_b  = b - S * 0.14
+    hw     = S * 0.14
+    tray_y = arr_b + S * 0.09
+    tw     = S * 0.20
 
-    cx      = S * 0.50
-    shaft_t = by + bh + S * 0.05
-    shaft_b = S * 0.80
-    hw      = S * 0.13
-    tray_y  = shaft_b + S * 0.07
-    tw      = S * 0.22
-
-    p.drawLine(QPointF(cx, shaft_t), QPointF(cx, shaft_b - hw * 0.6))
-    p.drawLine(QPointF(cx - hw, shaft_b - hw), QPointF(cx, shaft_b))
-    p.drawLine(QPointF(cx + hw, shaft_b - hw), QPointF(cx, shaft_b))
+    arr_pen = QPen(stroke_color)
+    arr_pen.setWidthF(stroke_w)
+    arr_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    arr_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(arr_pen)
+    p.drawLine(QPointF(cx, arr_t),  QPointF(cx, arr_b - hw * 0.5))
+    p.drawLine(QPointF(cx - hw, arr_b - hw), QPointF(cx, arr_b))
+    p.drawLine(QPointF(cx + hw, arr_b - hw), QPointF(cx, arr_b))
     p.drawLine(QPointF(cx - tw, tray_y), QPointF(cx + tw, tray_y))
 
     p.end()
@@ -975,7 +940,6 @@ class ScopeWindow(QDialog):
     _sig_update_buttons = Signal()
     _sig_stop_spinner   = Signal()
     _sig_plot           = Signal(object, object, object)   # ch_data, t_axis, cfg (full rebuild)
-    _sig_rt_fast        = Signal(object, object, object)   # ch_data, t_axis, cfg (line-update only)
     _sig_show_warning   = Signal(str, str)                 # title, message
     _sig_elf_loaded     = Signal(int)                      # count of vars loaded
     _sig_elf_scanning   = Signal()                         # folder scan started
@@ -1027,16 +991,9 @@ class ScopeWindow(QDialog):
         self._plotted_lines       = {}
         self._legend_obj          = None
         self._hide_labels         = False
-        # RT rolling buffer (pre-allocated numpy arrays)
-        self._rt_buf_data         = None   # list of 4 np.ndarray
-        self._rt_buf_time         = None   # np.ndarray of timestamps (seconds)
-        self._rt_buf_cap          = 0      # total capacity (samples)
-        self._rt_buf_head         = 0      # next write position
-        self._rt_buf_count        = 0      # samples stored so far
-        self._rt_buf_cfg          = None   # config used to build buffer
-        self._rt_panned           = False  # True when user has panned away from live
-        self._rt_t0               = None   # wall-clock time of first RT sample
-        self._rt_lines            = {}     # ch_idx -> Line2D reused across RT frames
+        # Per-channel display scale multipliers (plot only; raw data preserved)
+        self._ch_scale            = [1.0, 1.0, 1.0, 1.0]
+        self._ch_scale_combos: list = []
         # Data range for zoom-out clamping
         self._data_xlim           = None
         self._data_ylim           = None
@@ -1057,7 +1014,6 @@ class ScopeWindow(QDialog):
         self._sig_update_buttons.connect(self._update_button_states)
         self._sig_stop_spinner.connect(self._stop_configure_spinner)
         self._sig_plot.connect(self._do_plot)
-        self._sig_rt_fast.connect(self._do_rt_fast_update)
         self._sig_show_warning.connect(self._slot_show_warning)
         self._sig_elf_loaded.connect(self._on_elf_loaded_slot)
         self._sig_elf_scanning.connect(self._on_elf_scanning_slot)
@@ -1071,6 +1027,10 @@ class ScopeWindow(QDialog):
         self._update_sample_counter()
         self._install_shortcuts()
         self._load_session_config()
+        # Prevent any button from becoming the "default" (Enter-key target)
+        for btn in self.findChildren(QPushButton):
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
 
     def _install_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._on_configure_clicked)
@@ -1079,6 +1039,12 @@ class ScopeWindow(QDialog):
         QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self._on_export_clicked)
         QShortcut(QKeySequence("Ctrl+Shift+D"), self).activated.connect(self._on_dark_clicked)
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._on_compact_clicked)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  UI CONSTRUCTION
@@ -1117,9 +1083,9 @@ class ScopeWindow(QDialog):
         self._btn_elf_load.setToolTip(
             "Load an ELF / project folder once to unlock variable names\n"
             "from your STM32 firmware. Click [+] on any channel to add them.")
-        self._btn_elf_load.setFixedSize(34, 30)
-        self._btn_elf_load.setIcon(_make_elf_icon(30, self._is_dark(_get_palette())))
-        self._btn_elf_load.setIconSize(QSize(28, 28))
+        self._btn_elf_load.setFixedSize(28, 28)
+        self._btn_elf_load.setIcon(_make_elf_icon(16, self._is_dark(_get_palette())))
+        self._btn_elf_load.setIconSize(QSize(16, 16))
         self._btn_elf_load.clicked.connect(self._on_elf_load)
         ch_hdr.addWidget(self._btn_elf_load)
 
@@ -1199,9 +1165,23 @@ class ScopeWindow(QDialog):
                               Qt.AlignmentFlag.AlignVCenter)
             self._ch_plus_btns.append(plus_btn)
 
+            # scale combo: ×1 / ×4 / ×10 / ×100 (display only)
+            scale_cb = QComboBox()
+            scale_cb.setObjectName("sc_ch_scale")
+            scale_cb.addItems(["×1", "×4", "×10", "×100"])
+            scale_cb.setCurrentIndex(0)
+            scale_cb.setFixedWidth(58)
+            scale_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+            scale_cb.setToolTip("Display scale (plot only — CSV export keeps raw values)")
+            scale_cb.currentIndexChanged.connect(
+                lambda idx, ci=i: self._on_scale_changed(ci, idx))
+            ch_grid.addWidget(scale_cb, row_idx, col_base + 4,
+                              Qt.AlignmentFlag.AlignVCenter)
+            self._ch_scale_combos.append(scale_cb)
+
             # gap between the two pairs
             if i % 2 == 0:
-                ch_grid.setColumnMinimumWidth(col_base + 4, 16)
+                ch_grid.setColumnMinimumWidth(col_base + 5, 10)
 
         # both combo columns stretch equally
         ch_grid.setColumnStretch(2, 1)
@@ -2190,20 +2170,30 @@ QToolTip {{
     font-size: 11px;
 }}
 
-/* ── ELF load button (icon-only) ─────────────────────────────── */
+/* ── ELF load button — identical visual language to sc_btn_compact ── */
 #sc_dialog QPushButton#sc_btn_elf {{
     background: {INPUT_BG};
+    color: {TEXT2};
     border: 1px solid {BORDER};
     border-radius: 4px;
     padding: 0px;
 }}
 #sc_dialog QPushButton#sc_btn_elf:hover {{
-    background: {RED_BG};
-    border-color: {RED};
+    background: {p['blue_light']};
+    border-color: {p['blue']};
+}}
+#sc_dialog QPushButton#sc_btn_elf:pressed {{
+    background: {p['blue']};
+    border-color: {p['blue']};
 }}
 #sc_dialog QPushButton#sc_btn_elf[loaded="true"] {{
     background: {p['green_bg']};
     border-color: {p['green_border']};
+}}
+#sc_dialog QPushButton#sc_btn_elf:disabled {{
+    color: {FAINT};
+    border-color: {BORDER};
+    background: {BG};
 }}
 
 
@@ -2226,6 +2216,25 @@ QPushButton#sc_btn_ch_add:disabled {{
     color: {FAINT};
     border-color: {BORDER};
     background: {BG};
+}}
+
+/* ── Per-channel scale combo ─────────────────────────────────── */
+QComboBox#sc_ch_scale {{
+    background: {BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 4px;
+    min-height: 20px;
+}}
+QComboBox#sc_ch_scale:hover {{
+    border-color: {p['blue']};
+}}
+QComboBox#sc_ch_scale::drop-down {{
+    width: 14px;
+    border: none;
 }}
 
 /* ── Picker dialog: [+] add button (green) ──────────────────── */
@@ -2306,8 +2315,8 @@ QDialog QLineEdit#sc_combo {{
 
         # refresh ELF button icon for current theme
         from PySide6.QtCore import QSize as _QS2
-        self._btn_elf_load.setIcon(_make_elf_icon(30, dark))
-        self._btn_elf_load.setIconSize(_QS2(28, 28))
+        self._btn_elf_load.setIcon(_make_elf_icon(16, dark))
+        self._btn_elf_load.setIconSize(_QS2(16, 16))
 
         # matplotlib colors
         self.fig.patch.set_facecolor(p['card'])
@@ -2566,6 +2575,15 @@ QDialog QLineEdit#sc_combo {{
     #  CONFIG CHANGE TRACKING
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _on_scale_changed(self, ch_idx: int, sel_idx: int):
+        factors = [1.0, 4.0, 10.0, 100.0]
+        self._ch_scale[ch_idx] = factors[sel_idx]
+        QSettings("Appcon Technologies", "AMC Interface").setValue(
+            f"scope/ch{ch_idx}_scale", sel_idx)
+        if self._last_plot_data is not None and not self._realtime_running:
+            ch_data, t_axis, cfg = self._last_plot_data
+            self._do_plot(ch_data, t_axis, cfg)
+
     def _on_config_changed(self):
         if self._updating_auto or self._configuring:
             return
@@ -2768,17 +2786,6 @@ QDialog QLineEdit#sc_combo {{
             QMessageBox.warning(self, "Operation in Progress",
                 "Stop the current Real Time or Scroll session before starting a Single Shot capture.")
             return
-        if self._last_plot_data is not None:
-            from PySide6.QtWidgets import QMessageBox
-            r = QMessageBox.question(
-                self,
-                "Overwrite capture?",
-                "You have unsaved capture data. Starting a new recording will erase it. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                return
         self._btn_single.setEnabled(False)
         self._btn_configure.setEnabled(False)
         # Snapshot trigger UI values on main thread before entering worker thread
@@ -2969,52 +2976,58 @@ QDialog QLineEdit#sc_combo {{
         self.canvas.draw_idle()
 
     def _on_scroll_zoom(self, event):
-        """Scroll wheel zooms axes anchored to cursor.
-        Plain wheel  → X axis zoom + Y autoscale to visible data.
-        Shift+wheel  → Y axis zoom only, anchored at cursor Y.
-        """
+        # Zoom locked during real-time acquisition — next frame would override anyway
+        if self._realtime_running:
+            return
         if event.inaxes is not self.ax:
             return
-        factor = 0.75 if event.button == 'up' else 1.0 / 0.75
 
-        # detect Shift modifier via Qt (event.key is unreliable in Qt backend)
+        # Standard zoom factor used by professional oscilloscope software (20% per tick)
+        zoom_in  = event.button == 'up'
+        factor   = 0.80 if zoom_in else 1.25   # 0.80 = zoom in 20%, 1.25 = zoom out 20%
+
         shift_held = bool(
             QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
         )
 
-        if shift_held and event.ydata is not None:
-            # Y-only zoom anchored at cursor — unlock any Y lock first
+        # ── X axis zoom anchored at cursor ───────────────────────────────────
+        if event.xdata is not None:
+            x0, x1 = self.ax.get_xlim()
+            xc = event.xdata
+            nx0 = xc - (xc - x0) * factor
+            nx1 = xc + (x1 - xc) * factor
+            # Hard clamp zoom-out: never wider than the full data range
+            if self._data_xlim is not None and not zoom_in:
+                dx_data = self._data_xlim[1] - self._data_xlim[0]
+                if (nx1 - nx0) >= dx_data:
+                    nx0, nx1 = self._data_xlim
+            # Hard clamp zoom-in: minimum 0.001 s window (avoids infinite zoom crash)
+            if zoom_in and (nx1 - nx0) < 0.001:
+                return
+            self.ax.set_xlim(nx0, nx1)
+
+        # ── Y axis zoom anchored at cursor (plain wheel = X+Y; Shift = X only) ─
+        if not shift_held and event.ydata is not None:
             self._ylim_locked = None
             if hasattr(self, '_chk_ylock') and self._chk_ylock.isChecked():
                 self._chk_ylock.setChecked(False)
             y0, y1 = self.ax.get_ylim()
             yc = event.ydata
-            new_ylim = (yc - (yc - y0) * factor, yc + (y1 - yc) * factor)
-            self.ax.set_ylim(new_ylim)
-        else:
-            if event.xdata is None:
+            ny0 = yc - (yc - y0) * factor
+            ny1 = yc + (y1 - yc) * factor
+            # Hard clamp zoom-out: never taller than 10× the full data Y range
+            if self._data_ylim is not None and not zoom_in:
+                dy_data = self._data_ylim[1] - self._data_ylim[0]
+                if (ny1 - ny0) >= dy_data * 10.0:
+                    ny0 = self._data_ylim[0] - dy_data * 4.5
+                    ny1 = self._data_ylim[1] + dy_data * 4.5
+            # Hard clamp zoom-in: minimum 1e-6 amplitude window
+            if zoom_in and (ny1 - ny0) < 1e-6:
                 return
-            x0, x1 = self.ax.get_xlim()
-            xc = event.xdata
-            new_xlim = (xc - (xc - x0) * factor, xc + (x1 - xc) * factor)
-            # Clamp zoom-out to full data range
-            data_xlim = self._data_xlim
-            if data_xlim is not None and event.button != 'up':
-                if (new_xlim[1] - new_xlim[0]) > (data_xlim[1] - data_xlim[0]):
-                    new_xlim = data_xlim
-            self.ax.set_xlim(new_xlim)
-            # Y autoscale to visible X window (unless Y is locked)
-            if not self._ylim_locked:
-                self._autoscale_y_to_view()
-            # RT: if user scrolled forward to live edge, return to live view
-            if self._realtime_running and self._rt_panned and self._rt_t0 is not None:
-                buf_t_max_s = time.time() - self._rt_t0
-                if buf_t_max_s > 0 and new_xlim[1] >= buf_t_max_s * 0.97:
-                    self._rt_panned = False
-                    QTimer.singleShot(0, self._rt_update_live_badge)
+            self.ax.set_ylim(ny0, ny1)
 
         self._blit_bg = None
-        self.canvas.draw_idle()
+        self.canvas.draw()   # draw() instead of draw_idle() = synchronous, no lag
 
     def _on_pan_motion(self, event):
         """Right-click drag pan using pixel coordinates — no drift."""
@@ -3036,7 +3049,7 @@ QDialog QLineEdit#sc_combo {{
         x0, x1 = self._pan_start_xlim
         y0, y1 = self._pan_start_ylim
         self.ax.set_xlim(x0 - dx, x1 - dx)
-        self._autoscale_y_to_view()
+        self.ax.set_ylim(y0 - dy, y1 - dy)
         self._blit_bg = None
         self.canvas.draw_idle()
 
@@ -3084,15 +3097,15 @@ QDialog QLineEdit#sc_combo {{
     def _on_canvas_click(self, event):
         if event.inaxes is not self.ax or event.xdata is None:
             return
-        # Right-click: start pan
+        # Right-click: start pan (locked during real-time acquisition)
         if event.button == 3:
+            if self._realtime_running:
+                return
             self._pan_active = True
             self._pan_start_px   = (event.x, event.y)
             self._pan_start_xlim = self.ax.get_xlim()
             self._pan_start_ylim = self.ax.get_ylim()
             self.canvas.setCursor(Qt.CursorShape.ClosedHandCursor)
-            if self._realtime_running:
-                self._rt_panned = True
             return
         # Left-click: A/B measurement cursors (only in cursor mode)
         if event.button != 1 or not self._ab_mode:
@@ -3160,6 +3173,17 @@ QDialog QLineEdit#sc_combo {{
             self._spin_tdisplay.setValue(td)
         except Exception:
             pass
+        # Restore per-channel scale combos
+        s2 = QSettings("Appcon Technologies", "AMC Interface")
+        factors = [1.0, 4.0, 10.0, 100.0]
+        for i, cb in enumerate(self._ch_scale_combos):
+            try:
+                idx = s2.value(f"scope/ch{i}_scale", 0, type=int)
+                idx = max(0, min(idx, 3))
+                cb.setCurrentIndex(idx)
+                self._ch_scale[i] = factors[idx]
+            except Exception:
+                pass
 
     # ══════════════════════════════════════════════════════════════════════════
     #  DISPLAY WINDOW CHANGE (scroll mode live resize)
@@ -3450,7 +3474,6 @@ QDialog QLineEdit#sc_combo {{
 
     def _worker_record(self):
         logging.debug("SCOPE _worker_record: starting")
-        self._rt_lines = {}   # single-shot always does full _do_plot rebuild
         if not self.last_config:
             self._set_status("Not configured")
             self._sig_update_buttons.emit()
@@ -3571,141 +3594,12 @@ QDialog QLineEdit#sc_combo {{
     #  RT ROLLING BUFFER
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _rt_init_buffer(self, cfg):
-        """Pre-allocate 30-second circular numpy arrays for the RT rolling buffer."""
+    def _rt_emit_plot(self, ch_data, cfg):
+        """Emit one RT frame as a full plot rebuild — exact expert behavior."""
         fs = cfg['samplefreq']
-        cap = max(64, int(30.0 * fs))
-        self._rt_buf_data  = [np.full(cap, np.nan, dtype=np.float32) for _ in range(4)]
-        self._rt_buf_time  = np.full(cap, np.nan, dtype=np.float64)
-        self._rt_buf_cap   = cap
-        self._rt_buf_head  = 0
-        self._rt_buf_count = 0
-        self._rt_buf_cfg   = cfg
-        self._rt_panned    = False
-        self._rt_t0        = None
-
-    def _rt_buf_push(self, ch_data, t_start_abs: float):
-        """Write one parsed frame into the circular buffer.
-
-        ch_data: list of 4 lists (from _parse_buffer).
-        t_start_abs: wall-clock time.time() at frame start.
-        """
-        if self._rt_buf_data is None:
-            return
-        cfg = self._rt_buf_cfg
-        fs  = cfg['samplefreq']
-        n   = cfg['n_samples']
-        cap = self._rt_buf_cap
-
-        if self._rt_t0 is None:
-            self._rt_t0 = t_start_abs
-
-        t_offset_start = t_start_abs - self._rt_t0
-        for i in range(n):
-            t = t_offset_start + i / fs
-            idx = self._rt_buf_head % cap
-            self._rt_buf_time[idx] = t
-            for ch in range(4):
-                if ch_data[ch]:
-                    self._rt_buf_data[ch][idx] = ch_data[ch][i] if i < len(ch_data[ch]) else np.nan
-                else:
-                    self._rt_buf_data[ch][idx] = np.nan
-            self._rt_buf_head += 1
-            if self._rt_buf_count < cap:
-                self._rt_buf_count += 1
-
-    def _rt_buf_get_view(self):
-        """Return (t_ms, ch_arrays) from circular buffer in chronological order.
-
-        Applies progressive downsampling:
-          - last 5 s  → full resolution
-          - 5–15 s    → 2× decimated
-          - 15–30 s   → 4× decimated
-        """
-        cap   = self._rt_buf_cap
-        count = self._rt_buf_count
-        if count == 0:
-            return None, None
-
-        if count < cap:
-            t_raw = self._rt_buf_time[:count].copy()
-            ch_raw = [self._rt_buf_data[ch][:count].copy() for ch in range(4)]
-        else:
-            head = self._rt_buf_head % cap
-            idx = np.arange(count)
-            order = (head + idx) % cap
-            t_raw  = self._rt_buf_time[order]
-            ch_raw = [self._rt_buf_data[ch][order] for ch in range(4)]
-
-        if len(t_raw) == 0:
-            return None, None
-
-        t_max = t_raw[-1]
-        cutoff_full = t_max - 5.0
-        cutoff_2x   = t_max - 15.0
-
-        mask_full = t_raw >= cutoff_full
-        mask_2x   = (t_raw >= cutoff_2x) & ~mask_full
-        mask_4x   = t_raw < cutoff_2x
-
-        def _decimate(arr, step):
-            return arr[::step]
-
-        t_parts = []
-        ch_parts = [[] for _ in range(4)]
-
-        if np.any(mask_4x):
-            t_parts.append(_decimate(t_raw[mask_4x], 4))
-            for ch in range(4):
-                ch_parts[ch].append(_decimate(ch_raw[ch][mask_4x], 4))
-        if np.any(mask_2x):
-            t_parts.append(_decimate(t_raw[mask_2x], 2))
-            for ch in range(4):
-                ch_parts[ch].append(_decimate(ch_raw[ch][mask_2x], 2))
-        if np.any(mask_full):
-            t_parts.append(t_raw[mask_full])
-            for ch in range(4):
-                ch_parts[ch].append(ch_raw[ch][mask_full])
-
-        if not t_parts:
-            return None, None
-
-        t_out  = np.concatenate(t_parts) * 1000.0  # convert to ms
-        ch_out = [np.concatenate(ch_parts[ch]) for ch in range(4)]
-        return t_out, ch_out
-
-    def _rt_update_live_badge(self):
-        """Set badge to green LIVE or grey HIST depending on pan state."""
-        if self._rt_panned:
-            self._lbl_live_badge.setObjectName("sc_live_badge_hist")
-            self._lbl_live_badge.setText("◌ HIST")
-        else:
-            self._lbl_live_badge.setObjectName("sc_live_badge_live")
-            self._lbl_live_badge.setText("● LIVE")
-        self._lbl_live_badge.style().unpolish(self._lbl_live_badge)
-        self._lbl_live_badge.style().polish(self._lbl_live_badge)
-
-    def _rt_emit_plot(self, cfg):
-        """Emit RT plot update. Fast-path reuses existing Line2D objects (no ax.cla())."""
-        t_ms, ch_out = self._rt_buf_get_view()
-        if t_ms is None:
-            return
-
-        ch_codes = cfg['ch_codes']
-        ch_data = [[] for _ in range(4)]
-        for ch in range(4):
-            if ch_codes[ch] > 0:
-                ch_data[ch] = ch_out[ch].tolist()
-
-        if not self._rt_panned:
-            if self._rt_lines:
-                # Fast-path: update line data only — no axes rebuild
-                self._sig_rt_fast.emit(ch_data, (t_ms / 1000.0).tolist(), cfg)
-            else:
-                # First frame: full plot to create axes, lines, labels
-                self._sig_plot.emit(ch_data, (t_ms / 1000.0).tolist(), cfg)
-
-        QTimer.singleShot(0, self._rt_update_live_badge)
+        n  = cfg['n_samples']
+        t_axis = [i / fs for i in range(n)]
+        self._sig_plot.emit(ch_data, t_axis, cfg)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  WORKER: REAL TIME
@@ -3723,7 +3617,6 @@ QDialog QLineEdit#sc_combo {{
                 return
 
             cfg = self.last_config
-            self._rt_init_buffer(cfg)
             self._rt_incomplete_count = 0
 
             frame = 0
@@ -3769,11 +3662,9 @@ QDialog QLineEdit#sc_combo {{
 
                     self._set_bytes(received, expected_bytes)
                     frame += 1
-                    # Always push and plot whatever was received — partial is better than nothing
                     if len(rt_buf) > 0:
                         ch_data = self._parse_buffer(bytes(rt_buf), cfg)
-                        self._rt_buf_push(ch_data, t_frame_start)
-                        self._rt_emit_plot(cfg)
+                        self._rt_emit_plot(ch_data, cfg)
                     if received == expected_bytes:
                         self._set_status(f"Real-time — frame {frame}")
                     else:
@@ -3782,17 +3673,6 @@ QDialog QLineEdit#sc_combo {{
                             f"Real-time: incomplete frame {self._rt_incomplete_count} "
                             f"({received}/{expected_bytes} B)"
                         )
-                        if self._rt_incomplete_count == 1:
-                            self._sig_show_warning.emit(
-                                "Real-Time: Incomplete Data",
-                                f"Frame received only {received} of {expected_bytes} bytes.\n\n"
-                                f"The serial link cannot keep up at this data rate. To fix:\n"
-                                f"  1. Stop Real Time\n"
-                                f"  2. Increase Rec [ms] (e.g. 50 ms or more)\n"
-                                f"  3. Lower Freq [Hz] (e.g. {max(100, cfg['samplefreq'] // 2):.0f} Hz)\n"
-                                f"  4. Use fewer channels\n"
-                                f"  5. Click Configure again, then Real Time"
-                            )
 
                 except Exception as e:
                     self._set_status(f"RT error: {e}")
@@ -3807,12 +3687,6 @@ QDialog QLineEdit#sc_combo {{
         finally:
             self.serial_manager.scope_active.clear()
             self._realtime_running = False
-            self._rt_lines = {}   # reset so next RT session rebuilds axes on first frame
-            # Re-enable autoscale for single-shot / zoom-to-fit after RT
-            try:
-                self.ax.set_autoscale_on(True)
-            except Exception:
-                pass
             self._set_status("Real-time stopped — last frame preserved")
             self._sig_update_buttons.emit()
             QTimer.singleShot(0, lambda: self._live_strip.setVisible(False))
@@ -4080,16 +3954,20 @@ QDialog QLineEdit#sc_combo {{
             code     = ch_codes[i]
             var_name = VARIABLE_NAMES.get(code, f"Ch{i+1}")
             unit     = VARIABLE_UNITS.get(var_name, "")
-            label    = f"{var_name} [{unit}]" if unit else var_name
-            line, = self.ax.plot(t_axis, samples, color=CHANNEL_COLORS[i], linewidth=1.4,
+            # Apply per-channel display scale (raw data preserved in _last_plot_data)
+            factor = self._ch_scale[i] if i < len(self._ch_scale) else 1.0
+            plot_samples = [s * factor for s in samples] if factor != 1.0 else samples
+            scale_suffix = f" ×{int(factor)}" if factor != 1.0 else ""
+            label = (f"{var_name} [{unit}]{scale_suffix}" if unit else f"{var_name}{scale_suffix}")
+            line, = self.ax.plot(t_axis, plot_samples, color=CHANNEL_COLORS[i], linewidth=1.4,
                                  label=label, zorder=2, picker=5)
             self._plotted_lines[i] = line
             any_plotted = True
-            # Update live labels
+            # Update live labels (show scaled value)
             if self._live_labels and i < len(self._live_labels):
-                last_val = samples[-1] if samples else float('nan')
+                last_val = plot_samples[-1] if plot_samples else float('nan')
                 unit_str = f" {unit}" if unit else ""
-                self._live_labels[i].setText(f"{var_name}: {last_val:.4g}{unit_str}")
+                self._live_labels[i].setText(f"{var_name}: {last_val:.4g}{unit_str}{scale_suffix}")
 
         if any_plotted:
             n_plotted = sum(1 for s in ch_data if s)
@@ -4157,57 +4035,6 @@ QDialog QLineEdit#sc_combo {{
         self._has_plot_data = True
         self._last_plot_data = (ch_data, t_axis, cfg)
         self._btn_export.setEnabled(True)
-
-        # Seed RT fast-path: reuse these Line2D objects on subsequent RT frames.
-        # For RT, disable antialiasing on traces (Bastibe — measurable Agg speedup)
-        # and disable per-frame autoscale (we control limits manually).
-        if self._realtime_running:
-            self._rt_lines = dict(self._plotted_lines)
-            for line in self._rt_lines.values():
-                line.set_antialiased(False)
-            self.ax.set_autoscale_on(False)
-
-    def _do_rt_fast_update(self, ch_data, t_axis, cfg):
-        """RT fast-path: update line data without rebuilding axes.
-        Called on every RT frame after the first to avoid ax.cla() overhead.
-        """
-        if not self._rt_lines:
-            # Fallback: axes not yet set up, do full rebuild
-            self._do_plot(ch_data, t_axis, cfg)
-            return
-
-        t_arr = np.asarray(t_axis, dtype=np.float32)
-        any_updated = False
-
-        for ch_idx, line in self._rt_lines.items():
-            samples = ch_data[ch_idx] if ch_idx < len(ch_data) else []
-            if samples:
-                s_arr = np.asarray(samples, dtype=np.float32)
-                # set_data is the canonical one-call form (matplotlib blitting tutorial)
-                line.set_data(t_arr[:len(s_arr)], s_arr)
-                any_updated = True
-                # Update live labels
-                if self._live_labels and ch_idx < len(self._live_labels):
-                    ch_codes = cfg['ch_codes']
-                    code = ch_codes[ch_idx]
-                    var_name = VARIABLE_NAMES.get(code, f"Ch{ch_idx + 1}")
-                    unit = VARIABLE_UNITS.get(var_name, "")
-                    unit_str = f" {unit}" if unit else ""
-                    self._live_labels[ch_idx].setText(
-                        f"{var_name}: {s_arr[-1]:.4g}{unit_str}"
-                    )
-
-        if not any_updated:
-            return
-
-        # Autoscale X to full buffer window, Y to visible data
-        if t_arr.size > 0:
-            self.ax.set_xlim(t_arr[0], t_arr[-1])
-        if not self._ylim_locked:
-            self._autoscale_y_to_view()
-
-        self._blit_bg = None
-        self.canvas.draw_idle()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EXPORT

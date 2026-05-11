@@ -70,7 +70,7 @@ from PySide6.QtGui import (
     QFont, QColor, QIcon, QPixmap, QPainter, QPen, QBrush,
     QAction, QPolygon, QKeySequence, QShortcut,
 )
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QGraphicsDropShadowEffect
 
 try:
     import qtawesome as qta
@@ -578,6 +578,7 @@ QLabel#baud_bps_lbl {{
 QComboBox#var_combo {{ padding-right: 22px; min-width: 60px; }}
 QComboBox#var_combo::drop-down {{ border: none; width: 20px; subcontrol-origin: padding; subcontrol-position: right center; }}
 QComboBox#var_combo::down-arrow {{ image: url({_ARROW_BLUE}); width: 10px; height: 10px; }}
+QComboBox#var_combo QAbstractItemView {{ max-height: 115px; }}
 QComboBox QAbstractItemView {{
     background: {p['white']}; border: 1px solid {p['border']};
     border-radius: 6px;
@@ -1188,19 +1189,80 @@ def _btn(text, obj, parent=None) -> QPushButton:
 
 
 class _DownCombo(QComboBox):
-    """QComboBox that always opens its popup below the widget, never above."""
+    """QComboBox that always opens its popup below the widget, never above.
+    Caps popup to 4 visible rows — scrollbar appears for longer lists."""
+    _MAX_ROWS = 4
+    _ROW_HEIGHT_PX = 26
+
     def showPopup(self):
         super().showPopup()
         popup = self.findChild(QFrame)
         if popup:
             pos = self.mapToGlobal(self.rect().bottomLeft())
             popup.move(pos)
+            max_h = self._ROW_HEIGHT_PX * self._MAX_ROWS + 10
+            if popup.height() > max_h:
+                popup.resize(popup.width(), max_h)
+            # Make sure the internal list-view has a scrollbar
+            from PySide6.QtWidgets import QAbstractScrollArea
+            lv = popup.findChild(QAbstractScrollArea)
+            if lv:
+                lv.setVerticalScrollBarPolicy(
+                    Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
 
 def _combo(items, parent=None) -> QComboBox:
     c = _DownCombo(parent)
     c.addItems(items)
+    c.setMaxVisibleItems(_DownCombo._MAX_ROWS)
     return c
+
+
+class _LogFileManager:
+    """Writes activity log to a dated file; rolls to _part2, _part3... past 5 MB."""
+    _MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+
+    def __init__(self, base_dir: str):
+        self._log_dir = os.path.join(base_dir, "logs")
+        self._base_name = datetime.datetime.now().strftime("amc_%Y-%m-%d_%H-%M-%S")
+        self._part = 1
+        self._file = None
+        try:
+            os.makedirs(self._log_dir, exist_ok=True)
+            self._open()
+        except Exception:
+            pass
+
+    def _open(self):
+        suffix = "" if self._part == 1 else f"_part{self._part}"
+        path = os.path.join(self._log_dir, f"{self._base_name}{suffix}.log")
+        self._file = open(path, "a", encoding="utf-8")
+        self._current_path = path
+
+    def write(self, line: str):
+        if self._file is None:
+            return
+        try:
+            self._file.write(line + "\n")
+            self._file.flush()
+            if os.path.getsize(self._current_path) >= self._MAX_BYTES:
+                self._file.close()
+                self._part += 1
+                self._open()
+        except Exception:
+            pass
+
+    def current_path(self) -> str:
+        return getattr(self, "_current_path", "")
+
+    def close(self):
+        try:
+            if self._file:
+                self._file.flush()
+                self._file.close()
+                self._file = None
+        except Exception:
+            pass
 
 
 def _section_row(number: int, title: str, subtitle: str) -> QWidget:
@@ -1361,6 +1423,7 @@ class AMCMainWindow(QMainWindow):
         self._queue_timer.timeout.connect(self._drain_response_queue)
         self._queue_timer.start(80)
 
+        self._log_file = _LogFileManager(os.path.dirname(os.path.abspath(__file__)))
         self._set_disconnected_ui()
         self._log_signal("SYS", f"AMC Interface v2.1.0 initialized — Appcon Technologies")
         self._log_signal("SYS", "Scanning available serial ports...")
@@ -2581,9 +2644,14 @@ class AMCMainWindow(QMainWindow):
         pane_lay.addWidget(body)
         body.show()
 
+        # Hide activity log to free space for the scope panel
+        self._combined_prev_log_visible = self._log_panel.isVisible()
+        self._log_panel.setVisible(False)
+
         self._scope_embed_pane.setVisible(True)
         total = self.width()
-        self._outer_splitter.setSizes([total // 2, total // 2])
+        # Give main interface 40%, scope 60% (log is hidden so more room)
+        self._outer_splitter.setSizes([total * 4 // 10, total * 6 // 10])
 
         self._combined_view_active = True
         self._combined_btn.setText("⊟  Separate View")
@@ -2608,6 +2676,10 @@ class AMCMainWindow(QMainWindow):
 
         # Reattach body to standalone dialog
         scope.attach_body()
+
+        # Restore log panel to its previous state
+        if getattr(self, "_combined_prev_log_visible", True):
+            self._log_panel.setVisible(True)
 
         self._combined_view_active = False
         self._combined_btn.setText("⊞  Combined View")
@@ -2806,10 +2878,7 @@ class AMCMainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _show_toast(self, message: str, level: str = "warn"):
-        """Modern stacked toast: icon + message in a rounded pill, drop shadow.
-        Toast is a top-level frameless tool window so it floats above any
-        modal dialog (Scope, Identification, etc.). Multiple toasts stack."""
-        # Icon + colors per level
+        """Modern floating toast card with drop shadow, anchored below header."""
         spec = {
             "warn":  ("fa5s.exclamation-triangle", C["orange_bg"], C["orange"],  C["orange_border"]),
             "error": ("fa5s.times-circle",          C["red_bg"],    C["red"],     C["red_border"]),
@@ -2818,41 +2887,61 @@ class AMCMainWindow(QMainWindow):
         }
         icon_name, bg, fg, border = spec.get(level, spec["warn"])
 
-        # Anchor target: the currently active top-level window (scope dialog if
-        # open, else main window). Toast positions relative to its top edge.
         anchor = QApplication.activeWindow() or self
         if anchor is None or not anchor.isVisible():
             anchor = self
 
-        # Top-level frameless tool window — floats above modal dialogs
-        toast = QFrame(
+        # Non-stacking: dismiss any currently visible toast before showing new one
+        if hasattr(self, "_toast_stack") and self._toast_stack:
+            for t in list(self._toast_stack):
+                try:
+                    t.hide()
+                    t.deleteLater()
+                except Exception:
+                    pass
+            self._toast_stack.clear()
+
+        # Outer translucent window provides shadow margin; inner card is opaque pill
+        outer = QFrame(
             None,
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.NoDropShadowWindowHint,
         )
-        toast.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        toast.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        toast.setObjectName("modern_toast")
-        toast.setStyleSheet(
-            f"QFrame#modern_toast {{"
+        outer.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        outer.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        outer_lay = QVBoxLayout(outer)
+        outer_lay.setContentsMargins(12, 8, 12, 12)
+        outer_lay.setSpacing(0)
+
+        card = QFrame(outer)
+        card.setObjectName("modern_toast_card")
+        card.setStyleSheet(
+            f"QFrame#modern_toast_card {{"
             f"  background: {bg};"
             f"  border: 1.5px solid {border};"
             f"  border-radius: 14px;"
             f"}}"
-            f"QFrame#modern_toast QLabel {{"
+            f"QFrame#modern_toast_card QLabel {{"
             f"  background: transparent;"
             f"  color: {fg};"
             f"  font-size: {_px(12)}px;"
             f"  font-weight: 600;"
             f"}}"
         )
+        outer_lay.addWidget(card)
 
-        # Layout: icon + text
-        lay = QHBoxLayout(toast)
-        lay.setContentsMargins(14, 8, 18, 8)
-        lay.setSpacing(10)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 100))
+        card.setGraphicsEffect(shadow)
+
+        card_lay = QHBoxLayout(card)
+        card_lay.setContentsMargins(14, 8, 18, 8)
+        card_lay.setSpacing(10)
 
         icon_lbl = QLabel()
         if _QTA:
@@ -2862,67 +2951,62 @@ class AMCMainWindow(QMainWindow):
                 icon_lbl.setText("●")
         else:
             icon_lbl.setText("●")
-        lay.addWidget(icon_lbl)
+        card_lay.addWidget(icon_lbl)
 
         text_lbl = QLabel(message)
         text_lbl.setWordWrap(False)
-        lay.addWidget(text_lbl)
+        card_lay.addWidget(text_lbl)
 
-        toast.adjustSize()
-        tw = max(toast.sizeHint().width(), 260)
-        th = toast.sizeHint().height()
+        outer.adjustSize()
+        tw = max(outer.sizeHint().width(), 284)
+        th = outer.sizeHint().height()
 
-        # Stack: find vertical offset based on currently visible toasts
         if not hasattr(self, "_toast_stack") or self._toast_stack is None:
             self._toast_stack = []
-        # purge dead refs
-        self._toast_stack = [t for t in self._toast_stack
-                             if t is not None and t.isVisible()]
-        y_step = th + 8
+        self._toast_stack = [t for t in self._toast_stack if t is not None and t.isVisible()]
+        y_step = th + 12
 
-        # Anchor at top-center of active window in global coords
         try:
             ageom = anchor.frameGeometry()
             top_center_global = anchor.mapToGlobal(QPoint(ageom.width() // 2, 0))
             ax = top_center_global.x() - tw // 2
-            ay = top_center_global.y() + 18
+            ay = top_center_global.y() + 48
         except Exception:
             ax = (self.width() - tw) // 2
-            ay = 60
-        ay += len(self._toast_stack) * y_step
+            ay = 72
+        # No stacking: stack is always empty here (cleared above)
 
-        toast.setGeometry(ax, ay - 12, tw, th)
-        toast.show()
-        toast.raise_()
+        outer.setGeometry(ax, ay - 12, tw, th)
+        outer.show()
+        outer.raise_()
 
-        # Slide-in animation (top -> resting y)
-        slide = QPropertyAnimation(toast, b"geometry", toast)
+        slide = QPropertyAnimation(outer, b"geometry", outer)
         slide.setDuration(220)
         slide.setStartValue(QRect(ax, ay - 12, tw, th))
         slide.setEndValue(QRect(ax, ay, tw, th))
         slide.setEasingCurve(QEasingCurve.Type.OutCubic)
         slide.start()
 
-        self._toast_stack.append(toast)
+        self._toast_stack.append(outer)
 
         def _dismiss():
             try:
-                if not toast.isVisible():
+                if not outer.isVisible():
                     return
-                out = QPropertyAnimation(toast, b"geometry", toast)
+                out = QPropertyAnimation(outer, b"geometry", outer)
                 out.setDuration(180)
-                cur = toast.geometry()
+                cur = outer.geometry()
                 out.setStartValue(cur)
                 out.setEndValue(QRect(cur.x(), cur.y() - 10, cur.width(), cur.height()))
                 out.setEasingCurve(QEasingCurve.Type.InCubic)
-                out.finished.connect(toast.hide)
-                out.finished.connect(toast.deleteLater)
+                out.finished.connect(outer.hide)
+                out.finished.connect(outer.deleteLater)
                 out.start()
-                if toast in self._toast_stack:
-                    self._toast_stack.remove(toast)
+                if outer in self._toast_stack:
+                    self._toast_stack.remove(outer)
             except Exception:
                 try:
-                    toast.deleteLater()
+                    outer.deleteLater()
                 except Exception:
                     pass
 
@@ -3454,13 +3538,17 @@ class AMCMainWindow(QMainWindow):
         self._log_text.append(html)
         sb = self._log_text.verticalScrollBar()
         sb.setValue(sb.maximum())
+        if hasattr(self, "_log_file"):
+            self._log_file.write(f"[{ts}] [{level:4}] {message}")
 
     def _clear_log(self):
         self._log_text.clear()
 
     def _export_log(self):
+        default_name = os.path.basename(self._log_file.current_path()) if hasattr(self, "_log_file") else "amc_log.txt"
+        default_name = os.path.splitext(default_name)[0] + ".txt"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Log", "", "Text Files (*.txt);;All Files (*)")
+            self, "Export Log", default_name, "Text Files (*.txt);;All Files (*)")
         if path:
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -3605,6 +3693,16 @@ class AMCMainWindow(QMainWindow):
             f"<small>Appcon Technologies</small>")
 
     def closeEvent(self, event):
+        role = _ModernModal.warn(
+            self, "Quit AMC Interface?",
+            "Closing will disconnect the serial port and stop all monitoring.<br>"
+            "Your activity log is saved automatically in the <b>logs/</b> folder.<br><br>"
+            "Are you sure you want to exit?",
+            [("Cancel", "secondary"), ("Quit", "danger")],
+        )
+        if role != "danger":
+            event.ignore()
+            return
         scope = getattr(self, "_scope_window", None)
         if scope is not None:
             try:
@@ -3620,6 +3718,10 @@ class AMCMainWindow(QMainWindow):
         self._stop_get_loop()
         self._stop_status_loop()
         self._stop_cmd_loop()
+        try:
+            self._log_file.close()
+        except Exception:
+            pass
         event.accept()
 
 
