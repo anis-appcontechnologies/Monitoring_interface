@@ -959,7 +959,7 @@ class ScopeWindow(QDialog):
         self._updating_auto       = False
         self._configuring         = False
         self._realtime_running    = False
-        self._rt_follow           = True   # Follow ON: auto-scale each frame; OFF: preserve zoom
+
         self._scroll_running      = False
         self._scroll_rings        = None
         self._scroll_t_ring       = None
@@ -1040,7 +1040,6 @@ class ScopeWindow(QDialog):
         QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self._on_export_clicked)
         QShortcut(QKeySequence("Ctrl+Shift+D"), self).activated.connect(self._on_dark_clicked)
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._on_compact_clicked)
-        QShortcut(QKeySequence("F"),       self).activated.connect(self._on_follow_shortcut)
         QShortcut(QKeySequence("D"),       self).activated.connect(self._on_dblclick_reset)
         QShortcut(QKeySequence("Ctrl+1"), self).activated.connect(self._on_single_clicked)
 
@@ -1482,20 +1481,6 @@ class ScopeWindow(QDialog):
         _apply_mono(self._lbl_fpwm)
         status_row.addWidget(self._lbl_fpwm)
 
-        self._btn_follow = QPushButton("Follow")
-        self._btn_follow.setObjectName("sc_btn_follow")
-        self._btn_follow.setCheckable(True)
-        self._btn_follow.setChecked(True)
-        self._btn_follow.setFixedHeight(20)
-        self._btn_follow.setFixedWidth(56)
-        self._btn_follow.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_follow.setToolTip(
-            "Follow ON: auto-scale view on each RT frame\n"
-            "Follow OFF: preserve current zoom/pan while RT runs\n"
-            "Shortcut: F")
-        self._btn_follow.toggled.connect(self._on_follow_toggled)
-        status_row.addWidget(self._btn_follow)
-
         # no-port warning (inline, hidden by default)
         self._no_port_frame = QFrame()
         self._no_port_frame.setObjectName("sc_no_port_frame")
@@ -1568,7 +1553,7 @@ class ScopeWindow(QDialog):
         self._live_strip.setVisible(False)
         graph_lay.addWidget(self._live_strip)
 
-        self._lbl_coords = QLabel("")
+        self._lbl_coords = QLabel("  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom")
         self._lbl_coords.setObjectName("sc_coords_label")
         self._lbl_coords.setAlignment(Qt.AlignmentFlag.AlignLeft)
         _apply_mono(self._lbl_coords)
@@ -2191,28 +2176,6 @@ QToolTip {{
     font-size: 11px;
 }}
 
-/* ── Follow toggle button ────────────────────────────────────────── */
-#sc_dialog QPushButton#sc_btn_follow,
-#sc_dialog QPushButton#sc_btn_follow_on,
-#sc_dialog QPushButton#sc_btn_follow_off {{
-    background: {INPUT_BG};
-    color: {TEXT2};
-    border: 1px solid {BORDER};
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 0px 3px;
-}}
-#sc_dialog QPushButton#sc_btn_follow_on {{
-    background: {p['green_bg']};
-    color: {p['green_dark']};
-    border-color: {p['green_border']};
-}}
-#sc_dialog QPushButton#sc_btn_follow_off {{
-    background: {INPUT_BG};
-    color: {FAINT};
-    border-color: {BORDER};
-}}
 
 /* ── ELF load button — identical visual language to sc_btn_compact ── */
 #sc_dialog QPushButton#sc_btn_elf {{
@@ -2967,7 +2930,7 @@ QDialog QLineEdit#sc_combo {{
             self._cursor_b = None
             self._clear_ab_lines()
             self.canvas.draw_idle()
-            self._lbl_coords.setText("")
+            self._lbl_coords.setText("  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom")
             self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
@@ -3020,11 +2983,10 @@ QDialog QLineEdit#sc_combo {{
         self.canvas.draw_idle()
 
     def _on_scroll_zoom(self, event):
-        # Zoom locked during real-time acquisition when Follow is ON
-        if self._realtime_running and self._rt_follow:
+        if self._realtime_running:
             from PySide6.QtWidgets import QToolTip
             from PySide6.QtGui import QCursor
-            QToolTip.showText(QCursor.pos(), "Zoom locked — turn Follow OFF to zoom during RT", self.canvas)
+            QToolTip.showText(QCursor.pos(), "Zoom locked during RT — stop to zoom", self.canvas)
             return
         if event.inaxes is not self.ax:
             return
@@ -3135,17 +3097,6 @@ QDialog QLineEdit#sc_combo {{
         self._blit_bg = None
         self.canvas.draw_idle()
 
-    def _on_follow_toggled(self, checked: bool):
-        self._rt_follow = checked
-        obj = "sc_btn_follow_on" if checked else "sc_btn_follow_off"
-        self._btn_follow.setObjectName(obj)
-        self._btn_follow.style().unpolish(self._btn_follow)
-        self._btn_follow.style().polish(self._btn_follow)
-
-    def _on_follow_shortcut(self):
-        if hasattr(self, '_btn_follow'):
-            self._btn_follow.setChecked(not self._btn_follow.isChecked())
-
     def _on_dblclick_reset(self):
         if self._data_xlim is not None and self._data_ylim is not None:
             self.ax.set_xlim(self._data_xlim)
@@ -3225,7 +3176,6 @@ QDialog QLineEdit#sc_combo {{
         s.setValue("rec_time",    self._spin_rectime.value())
         s.setValue("sample_freq", self._spin_samplefreq.value())
         s.setValue("t_display",   self._spin_tdisplay.value())
-        s.setValue("follow",      self._rt_follow)
         s.setValue("hide_labels", self._chk_hide_labels.isChecked())
 
     def _load_session_config(self):
@@ -3243,9 +3193,6 @@ QDialog QLineEdit#sc_combo {{
             self._spin_rectime.setValue(rt)
             self._spin_samplefreq.setValue(sf)
             self._spin_tdisplay.setValue(td)
-            follow = s.value("follow", True, type=bool)
-            if hasattr(self, '_btn_follow'):
-                self._btn_follow.setChecked(follow)
             hide_lbl = s.value("hide_labels", False, type=bool)
             if hasattr(self, '_chk_hide_labels'):
                 self._chk_hide_labels.setChecked(hide_lbl)
@@ -3367,8 +3314,9 @@ QDialog QLineEdit#sc_combo {{
             self.ax.draw_artist(self._crosshair_v)
             canvas.blit(self.ax.bbox)
         else:
-            if self._lbl_coords.text():
-                self._lbl_coords.setText("")
+            _hint = "  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom"
+            if self._lbl_coords.text() != _hint:
+                self._lbl_coords.setText(_hint)
             if self._crosshair_v is not None:
                 self._blit_bg = None
                 self._crosshair_v.remove()
@@ -4021,13 +3969,6 @@ QDialog QLineEdit#sc_combo {{
         dark = self._is_dark(p)
         grid_color = "#3A3A5C" if dark else "#E8EAF0"
 
-        # Preserve zoom when Follow is OFF and we are in RT (not a fresh plot)
-        _saved_xlim = None
-        _saved_ylim = None
-        if self._realtime_running and not self._rt_follow and self._data_xlim is not None:
-            _saved_xlim = self.ax.get_xlim()
-            _saved_ylim = self.ax.get_ylim()
-
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
@@ -4110,20 +4051,14 @@ QDialog QLineEdit#sc_combo {{
         self._clear_ab_lines()
         if self._ylim_locked is not None:
             self.ax.set_ylim(self._ylim_locked)
-        # Restore user zoom when Follow is OFF
-        if _saved_xlim is not None:
-            self.ax.set_xlim(_saved_xlim)
-            self.ax.set_ylim(_saved_ylim)
         try:
             self.fig.tight_layout(pad=0.2)
         except Exception:
             pass
         self.canvas.draw()
 
-        # Store auto-scale bounds so zoom-out can be clamped (only update when following)
-        if _saved_xlim is None:
-            self._data_xlim = tuple(self.ax.get_xlim())
-            self._data_ylim = tuple(self.ax.get_ylim())
+        self._data_xlim = tuple(self.ax.get_xlim())
+        self._data_ylim = tuple(self.ax.get_ylim())
 
         self._has_plot_data = True
         self._last_plot_data = (ch_data, t_axis, cfg)
