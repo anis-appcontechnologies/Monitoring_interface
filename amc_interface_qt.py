@@ -1539,7 +1539,7 @@ class AMCMainWindow(QMainWindow):
             self._refresh_ports()
             self._pulse_refresh_btn()
             for port in sorted(new_ports):
-                self._show_toast(f"Device connected: {port} — press Connect to use it", "info")
+                self._show_toast(f"Device connected: {port}. Press Connect to use it.", "info")
                 self._log_signal("SYS", f"USB device appeared: {port}")
 
         if removed_ports:
@@ -1547,7 +1547,7 @@ class AMCMainWindow(QMainWindow):
             if self.serial.is_open:
                 connected_port = getattr(self, '_last_port', None)
                 if connected_port and connected_port in removed_ports:
-                    self._show_toast(f"Device {connected_port} unplugged — disconnecting", "warn")
+                    self._show_toast(f"Device {connected_port} unplugged. Disconnecting.", "warn")
                     self._log_signal("WARN", f"USB device removed: {connected_port}")
                     self._on_disconnect()
             # Refresh combobox to remove the gone port
@@ -2657,7 +2657,7 @@ class AMCMainWindow(QMainWindow):
         self._combined_btn.setText("⊟  Separate View")
         self._combined_btn.setToolTip("Switch back to separate scope window  [Ctrl+Shift+M]")
         QSettings("Appcon Technologies", "AMC Interface").setValue("combined_view", True)
-        self._show_toast("Combined view — drag the divider to resize", "info")
+        self._show_toast("Combined view. Drag the divider to resize.", "info")
 
     def _exit_combined_view(self):
         scope = getattr(self, '_scope_window', None)
@@ -2686,7 +2686,7 @@ class AMCMainWindow(QMainWindow):
         self._combined_btn.setToolTip("Show interface + oscilloscope side-by-side  [Ctrl+Shift+M]")
         self._combined_btn.setChecked(False)
         QSettings("Appcon Technologies", "AMC Interface").setValue("combined_view", False)
-        self._show_toast("Switched to separate scope window", "info")
+        self._show_toast("Scope window detached.", "info")
 
     def _update_control_combo_style(self, mode):
         pass  # replaced by radio button checked states
@@ -2860,7 +2860,7 @@ class AMCMainWindow(QMainWindow):
                     if not self._cable_drop_announced and self.serial.is_open:
                         self._cable_drop_announced = True
                         QTimer.singleShot(0, lambda: self._show_toast(
-                            "Cable disconnected — connection closed", "error"))
+                            "Cable disconnected. Connection closed.", "error"))
                     self._sig_disconnect.emit()
                 elif tag == "cmd_completed":        self._sig_cmd_completed.emit(item[1], item[2])
                 elif tag == "_quality":             self._sig_quality.emit(item[1])
@@ -2887,9 +2887,7 @@ class AMCMainWindow(QMainWindow):
         }
         icon_name, bg, fg, border = spec.get(level, spec["warn"])
 
-        anchor = QApplication.activeWindow() or self
-        if anchor is None or not anchor.isVisible():
-            anchor = self
+        anchor = self
 
         # Non-stacking: dismiss any currently visible toast before showing new one
         if hasattr(self, "_toast_stack") and self._toast_stack:

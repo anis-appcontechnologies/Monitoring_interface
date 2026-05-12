@@ -80,7 +80,7 @@ def _get_palette():
         return _amcqt.C
     except Exception:
         return {
-            "white": "#FFFFFF", "bg": "#F0F0F0", "border": "#D8D8D8",
+            "white": "#FFFFFF", "card": "#FFFFFF", "bg": "#F0F0F0", "border": "#D8D8D8",
             "text": "#1A1A1A", "text2": "#3A3A3A", "muted": "#707070",
             "red": "#C0272D", "red_bg": "#F9ECEC", "red_border": "#E8AAAC",
             "orange": "#C07820", "orange_bg": "#FDF3E3", "orange_border": "#E8C87A",
@@ -522,7 +522,7 @@ class InertiaIdentification(QDialog):
                                      font-family: "Consolas", "Courier New", monospace; }}
             {d} QLabel#ip_pi_unit {{ font-size: 10px; color: {p['muted']}; min-width: 70px; }}
             {d} QLineEdit {{
-                background: {p['white']}; color: {p['text']};
+                background: {p['input_bg']}; color: {p['text']};
                 border: 1px solid {p['border']}; border-radius: 5px;
                 padding: 4px 8px; font-size: 12px; min-height: 22px;
                 selection-background-color: {p['blue']};
@@ -536,7 +536,7 @@ class InertiaIdentification(QDialog):
             {d} QPushButton#ip_btn_primary:hover    {{ background: {p['blue_dark']}; }}
             {d} QPushButton#ip_btn_primary:disabled {{ background: {p['muted']}; color: {p['bg']}; }}
             {d} QPushButton#ip_btn_secondary {{
-                background: {p['white']}; color: {p['blue']};
+                background: {p['card']}; color: {p['blue']};
                 border: 1.5px solid {p['blue']}; border-radius: 6px;
                 padding: 8px 14px; font-size: 12px; font-weight: 600;
             }}

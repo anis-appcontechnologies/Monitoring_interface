@@ -1465,7 +1465,7 @@ class ScopeWindow(QDialog):
         self._lbl_status_pill.setFixedHeight(20)
         status_row.addWidget(self._lbl_status_pill)
 
-        self._lbl_status = QLabel("Ready — select channels and configure")
+        self._lbl_status = QLabel("Ready. Select channels and press Configure.")
         self._lbl_status.setObjectName("sc_status_label")
         self._lbl_status.setWordWrap(False)
         self._lbl_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1490,7 +1490,7 @@ class ScopeWindow(QDialog):
         self._no_port_icon = QLabel("●")
         self._no_port_icon.setObjectName("sc_no_port_icon")
         np_lay.addWidget(self._no_port_icon)
-        self._no_port_text_lbl = QLabel("Not connected — open a serial port in the main interface")
+        self._no_port_text_lbl = QLabel("No serial port connected. Open a port in the main interface.")
         self._no_port_text_lbl.setObjectName("sc_no_port_text")
         np_lay.addWidget(self._no_port_text_lbl)
         self._no_port_frame.setVisible(False)
@@ -3138,7 +3138,7 @@ QDialog QLineEdit#sc_combo {{
             self._clear_ab_lines()
             self._cursor_a_line = self.ax.axvline(event.xdata, color='#F0A000',
                                                    linewidth=1.2, alpha=0.9, linestyle='-')
-            self._lbl_coords.setText(f"  A: t={x_s:.4f} s  val={y:.4g}  —  left-click to set B")
+            self._lbl_coords.setText(f"  A: t={x_s:.4f} s  val={y:.4g}    left-click to set B")
             self._blit_bg = None
             self.canvas.draw_idle()
         else:
@@ -3156,7 +3156,7 @@ QDialog QLineEdit#sc_combo {{
             self._lbl_coords.setText(
                 f"  A: t={xa:.4f}s  val={ya:.4g}    "
                 f"B: t={x_s:.4f}s  val={y:.4g}    "
-                f"ΔT={dt:.4f}s  ΔY={dy:.4g}  —  click to move B"
+                f"ΔT={dt:.4f}s  ΔY={dy:.4g}    click to move B"
             )
             self._cursor_b = None  # allow re-clicking B
             self._blit_bg = None
@@ -3473,7 +3473,7 @@ QDialog QLineEdit#sc_combo {{
             logging.info("SCOPE CONFIGURE OK: recad=%d rectyp=%d n_samples=%d actual_fs=%.1f",
                          recad_value, rectyp_value, n_samples, actual_fs)
             self._set_status(
-                f"Configured: {n_samples} smp @ {actual_fs:.0f} Hz  —  ch: {', '.join(ch_names)}"
+                f"Configured: {n_samples} smp @ {actual_fs:.0f} Hz  ch: {', '.join(ch_names)}"
             )
 
         except Exception as e:
@@ -3481,13 +3481,13 @@ QDialog QLineEdit#sc_combo {{
             self.is_configured = False
             msg = str(e)
             if "not open" in msg.lower() or "port" in msg.lower():
-                self._set_status("Error: No serial port connected — connect first, then configure")
+                self._set_status("No serial port connected. Connect first, then configure.")
             elif "channel" in msg.lower() or "select" in msg.lower():
                 self._set_status("Error: Select at least one channel (set Ch1–Ch4 to a variable, not None)")
             elif "overflow" in msg.lower() or "bytes" in msg.lower():
-                self._set_status("Error: Buffer overflow — reduce Rec time or sample rate, or use fewer channels")
+                self._set_status("Buffer overflow. Reduce Rec time or sample rate, or use fewer channels.")
             elif "samples" in msg.lower():
-                self._set_status("Error: Too many samples — reduce Rec [ms] or increase period")
+                self._set_status("Too many samples. Reduce Rec time or increase period.")
             else:
                 self._set_status(f"Configure failed: {msg}")
         finally:
@@ -3551,7 +3551,7 @@ QDialog QLineEdit#sc_combo {{
                             logging.debug("SCOPE trigger poll failed: %s", _e)
                         time.sleep(0.01)
                     else:
-                        self._set_status("Trigger timeout — no crossing detected within 30 s")
+                        self._set_status("Trigger timeout: no crossing detected within 30 s")
                         self._sig_update_buttons.emit()
                         return
 
@@ -3598,10 +3598,10 @@ QDialog QLineEdit#sc_combo {{
                 self._parse_and_plot_data(bytes(buffer_response), cfg)
 
             if received == expected_bytes:
-                self._set_status(f"Done — received {received} bytes (ready for next shot)")
+                self._set_status(f"Done. {received} bytes received.")
             else:
                 missing = expected_bytes - received
-                self._set_status(f"Incomplete read — {received}/{expected_bytes} bytes")
+                self._set_status(f"Incomplete read: {received}/{expected_bytes} bytes")
                 self._sig_show_warning.emit(
                     "Incomplete Data Transfer",
                     f"Only {received} of {expected_bytes} bytes were received ({missing} missing).\n\n"
@@ -3701,7 +3701,7 @@ QDialog QLineEdit#sc_combo {{
                     else:
                         self._rt_incomplete_count += 1
                         pct = int(received * 100 / expected_bytes) if expected_bytes else 0
-                        self._set_status(f"RT  F:{frame}  PARTIAL {pct}% — check baud rate")
+                        self._set_status(f"RT  F:{frame}  PARTIAL {pct}%  check baud rate")
 
                 except Exception as e:
                     self._set_status(f"RT error — {type(e).__name__}: {e}")
@@ -3716,7 +3716,7 @@ QDialog QLineEdit#sc_combo {{
         finally:
             self.serial_manager.scope_active.clear()
             self._realtime_running = False
-            self._set_status("RT stopped — last frame preserved  [D] to reset zoom")
+            self._set_status("RT stopped. Last frame preserved. [D] to reset zoom.")
             self._sig_update_buttons.emit()
             QTimer.singleShot(0, lambda: self._live_strip.setVisible(False))
 
