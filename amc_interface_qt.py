@@ -5,6 +5,28 @@ UI rebuilt to match target design: numbered section cards, header bar,
 sliders for references, commands table with Send panel, dark activity log.
 All serial/threading/queue/state-machine logic preserved unchanged.
 Author: DAGBAGI Mohamed  (UI rebuild: Appcon Technologies)
+
+FILE MAP (search by line number to jump to any section)
+────────────────────────────────────────────────────────
+  L 20   Imports & top-level helpers (dec_encode/dec_decode moved to protocol.py)
+  L 784  SerialManager         — serial port open/close/send, thread lock
+  L 857  QueuedCommandManager  — queued write commands with ACK tracking
+  L 935  _FlowArrow            — animated data-flow arrow widget
+  L 1067 _ModernModal          — styled modal dialog (error / warn / info)
+  L 1232 _LogFileManager       — rotating log file writer
+  L 1312 AMCMainWindow         — main application window
+         L 1546  _port_watch_tick      USB plug/unplug detection (deferred disconnect)
+         L 1660  _build_serial_card    Section 1: COM port + Connect/Disconnect UI
+         L 1758  _build_status_card    Section 2: mode pill, fault indicator, get-vars
+         L 2258  _build_menu           Menu bar (File / Identification / Terminal / Monitoring)
+         L 2339  _set_connected_ui     UI state on connect (enables controls, logs port)
+         L 2378  _set_disconnected_ui  UI state on disconnect
+         L 2566  _toggle_theme         Dark / light mode switch
+         L 2988  _on_connect           Opens serial port in background thread, reads fpwm
+         L 3025  _on_disconnect        Stops all loops, closes port
+         L 3324  _start/stop loops     Four background polling loops (status/fault/get/cmd)
+         L 3513  _append_log           HTML-safe activity log renderer
+         L 3694  closeEvent            Quit confirmation modal + cleanup
 """
 
 import math
@@ -15,6 +37,9 @@ import logging
 import sys
 import os
 import datetime
+import atexit
+import shutil
+from html import escape
 from enum import Enum
 
 # ── Decimal encode/decode ─────────────────────────────────────────────────────
@@ -74,9 +99,11 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QGraphicsDropShadowEffect
 
 try:
     import qtawesome as qta
-    _QTA = True
-except ImportError:
-    _QTA = False
+except ImportError as _qta_err:
+    raise RuntimeError(
+        "QtAwesome is required for consistent icons across all PCs. "
+        "Install with: pip install QtAwesome"
+    ) from _qta_err
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DESIGN TOKENS
@@ -278,6 +305,7 @@ def _make_eye_icon(color_hex: str, size: int) -> QPixmap:
 
 import tempfile as _tempfile, os as _os
 _ARROW_DIR   = _tempfile.mkdtemp(prefix="amc_arrows_")
+atexit.register(shutil.rmtree, _ARROW_DIR, True)
 _ARROW_MUTED = _os.path.join(_ARROW_DIR, "arrow_muted.png").replace("\\", "/")
 _ARROW_BLUE  = _os.path.join(_ARROW_DIR, "arrow_blue.png").replace("\\", "/")
 
@@ -795,6 +823,8 @@ class SerialManager:
                 except Exception:
                     pass
             self._ser = serial.Serial(port, baud, timeout=timeout)
+            # Flush any stale bytes that arrived during MCU boot/reset
+            self._ser.reset_input_buffer()
             logging.info("Connected to %s @ %s baud", port, baud)
 
     def disconnect(self):
@@ -968,6 +998,10 @@ class _FlowArrow(QWidget):
             self._timer.stop()
         self.update()
 
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1044,6 +1078,10 @@ class _GripHandle(QSplitterHandle):
         painter.end()
 
 
+# Modal button role constants — used as return values from _ModernModal.warn()
+MODAL_CONFIRMED = "danger"
+MODAL_CANCELLED = "secondary"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MODERN MODAL DIALOG
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1089,13 +1127,8 @@ class _ModernModal(QDialog):
         icon_name, icon_color = self._ICONS.get(level, self._ICONS["info"])
         icon_lbl = QLabel()
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        if _QTA:
-            pix = qta.icon(icon_name, color=icon_color).pixmap(32, 32)
-            icon_lbl.setPixmap(pix)
-        else:
-            fallback = {"error": "✕", "warn": "⚠", "info": "ℹ", "success": "✓"}
-            icon_lbl.setText(fallback.get(level, "ℹ"))
-            icon_lbl.setStyleSheet(f"color: {icon_color}; font-size: {_px(24)}px;")
+        pix = qta.icon(icon_name, color=icon_color).pixmap(32, 32)
+        icon_lbl.setPixmap(pix)
         card_lay.addWidget(icon_lbl)
 
         # Title
@@ -1265,8 +1298,8 @@ class _LogFileManager:
             pass
 
 
-def _section_row(number: int, title: str, subtitle: str) -> QWidget:
-    """Returns a widget: [title / subtitle] — number badge removed for cleaner look."""
+def _section_row(title: str, subtitle: str) -> QWidget:
+    """Returns a widget: [title / subtitle]."""
     w = QWidget()
     w.setStyleSheet("background: transparent;")
     lay = QHBoxLayout(w)
@@ -1368,6 +1401,10 @@ class AMCMainWindow(QMainWindow):
         self.loop_thread = self.fault_loop_thread = None
         self.get_loop_thread = self.status_loop_thread = None
         self.cmd_loop_thread = None
+        self._fault_stop  = threading.Event()
+        self._status_stop = threading.Event()
+        self._get_stop    = threading.Event()
+        self._cmd_stop    = threading.Event()
 
         self.old_values               = {}
         self.last_valid_get_responses = {i: "N/A" for i in range(3)}
@@ -1380,6 +1417,7 @@ class AMCMainWindow(QMainWindow):
 
         # Slider ↔ entry sync guard
         self._slider_updating = False
+        self.fpwm = 16000.0   # updated from firmware on each connect
 
         # Cable-drop announcement guard — reset on each fresh connection
         self._cable_drop_announced = False
@@ -1549,7 +1587,7 @@ class AMCMainWindow(QMainWindow):
                 if connected_port and connected_port in removed_ports:
                     self._show_toast(f"Device {connected_port} unplugged. Disconnecting.", "warn")
                     self._log_signal("WARN", f"USB device removed: {connected_port}")
-                    self._on_disconnect()
+                    QTimer.singleShot(0, self._on_disconnect)
             # Refresh combobox to remove the gone port
             self._refresh_ports()
             for port in sorted(removed_ports):
@@ -1610,11 +1648,8 @@ class AMCMainWindow(QMainWindow):
         lay.addWidget(self._conn_pill)
 
         self._log_toggle_btn = QPushButton()
-        if _QTA:
-            self._log_toggle_btn.setIcon(qta.icon("fa5s.eye-slash", color=C["muted"]))
-            self._log_toggle_btn.setIconSize(QSize(_px(14), _px(14)))
-        else:
-            self._log_toggle_btn.setText("▐")
+        self._log_toggle_btn.setIcon(qta.icon("fa5s.eye-slash", color=C["muted"]))
+        self._log_toggle_btn.setIconSize(QSize(_px(14), _px(14)))
         self._log_toggle_btn.setObjectName("btn_theme")
         self._log_toggle_btn.setFixedSize(_px(28), _px(28))
         self._log_toggle_btn.setToolTip("Hide Activity Log")
@@ -1622,11 +1657,8 @@ class AMCMainWindow(QMainWindow):
         lay.addWidget(self._log_toggle_btn)
 
         self._theme_btn = QPushButton()
-        if _QTA:
-            self._theme_btn.setIcon(qta.icon("fa5s.moon", color=C["muted"]))
-            self._theme_btn.setIconSize(QSize(_px(14), _px(14)))
-        else:
-            self._theme_btn.setText("◐")
+        self._theme_btn.setIcon(qta.icon("fa5s.moon", color=C["muted"]))
+        self._theme_btn.setIconSize(QSize(_px(14), _px(14)))
         self._theme_btn.setObjectName("btn_theme")
         self._theme_btn.setFixedSize(_px(28), _px(28))
         self._theme_btn.setToolTip("Toggle dark / light mode  [Ctrl+Shift+D]")
@@ -1653,7 +1685,7 @@ class AMCMainWindow(QMainWindow):
         lay.setContentsMargins(12, 5, 12, 5)
         lay.setSpacing(5)
 
-        lay.addWidget(_section_row(1, "Serial Connection",
+        lay.addWidget(_section_row("Serial Connection",
                                    "Configure and manage serial port connection"))
 
         # Row 1: port combo | baud | refresh | reset
@@ -1703,22 +1735,16 @@ class AMCMainWindow(QMainWindow):
         top_row.addSpacing(8)
 
         self._refresh_btn = _btn("", "btn_outline")
-        if _QTA:
-            self._refresh_btn.setIcon(qta.icon("fa5s.sync-alt", color=C["muted"]))
-            self._refresh_btn.setIconSize(QSize(_px(14), _px(14)))
-        else:
-            self._refresh_btn.setText("⟳")
+        self._refresh_btn.setIcon(qta.icon("fa5s.sync-alt", color=C["muted"]))
+        self._refresh_btn.setIconSize(QSize(_px(14), _px(14)))
         self._refresh_btn.setFixedWidth(_px(34))
         self._refresh_btn.setToolTip("Refresh port list")
         self._refresh_btn.clicked.connect(self._refresh_ports)
         top_row.addWidget(self._refresh_btn)
 
         self.reset_button = _btn("", "btn_outline")
-        if _QTA:
-            self.reset_button.setIcon(qta.icon("fa5s.power-off", color=C["muted"]))
-            self.reset_button.setIconSize(QSize(_px(14), _px(14)))
-        else:
-            self.reset_button.setText("⏻")
+        self.reset_button.setIcon(qta.icon("fa5s.power-off", color=C["muted"]))
+        self.reset_button.setIconSize(QSize(_px(14), _px(14)))
         self.reset_button.setFixedWidth(_px(34))
         self.reset_button.setToolTip("Reset controller")
         self.reset_button.clicked.connect(self._on_reset)
@@ -1733,17 +1759,15 @@ class AMCMainWindow(QMainWindow):
 
         self.connect_button = _btn("Connect", "btn_primary")
         self.connect_button.setFixedWidth(_px(110))
-        if _QTA:
-            self.connect_button.setIcon(qta.icon("fa5s.plug", color="#FFFFFF"))
-            self.connect_button.setIconSize(QSize(_px(13), _px(13)))
+        self.connect_button.setIcon(qta.icon("fa5s.plug", color="#FFFFFF"))
+        self.connect_button.setIconSize(QSize(_px(13), _px(13)))
         self.connect_button.clicked.connect(self._on_connect)
         bot_row.addWidget(self.connect_button)
 
         self.disconnect_button = _btn("Disconnect", "btn_danger_outline")
         self.disconnect_button.setFixedWidth(_px(110))
-        if _QTA:
-            self.disconnect_button.setIcon(qta.icon("fa5s.unlink", color=C["red"]))
-            self.disconnect_button.setIconSize(QSize(_px(13), _px(13)))
+        self.disconnect_button.setIcon(qta.icon("fa5s.unlink", color=C["red"]))
+        self.disconnect_button.setIconSize(QSize(_px(13), _px(13)))
         self.disconnect_button.clicked.connect(self._on_disconnect)
         bot_row.addWidget(self.disconnect_button)
 
@@ -1760,7 +1784,7 @@ class AMCMainWindow(QMainWindow):
         lay.setContentsMargins(12, 5, 12, 5)
         lay.setSpacing(5)
 
-        lay.addWidget(_section_row(2, "Controller Status",
+        lay.addWidget(_section_row("Controller Status",
                                    "Real-time controller status and health"))
 
         # Row 1: status pill only — fault gets its own row below so it can never squish siblings
@@ -1996,7 +2020,7 @@ class AMCMainWindow(QMainWindow):
         outer.setContentsMargins(14, 8, 14, 10)
         outer.setSpacing(6)
 
-        outer.addWidget(_section_row(4, "Commands",
+        outer.addWidget(_section_row("Commands",
                                      "Set a value, send it, read the live response"))
 
         set_defaults = ["Speed", "Usq", "Isq"]
@@ -2220,21 +2244,15 @@ class AMCMainWindow(QMainWindow):
         act_lbl = _lbl("Activity Log", "sec_title")
         hdr_row.addWidget(act_lbl, 1)
         clr = _btn("", "btn_outline")
-        if _QTA:
-            clr.setIcon(qta.icon("fa5s.trash-alt", color=C["muted"]))
-            clr.setIconSize(QSize(_px(13), _px(13)))
-        else:
-            clr.setText("Clear")
+        clr.setIcon(qta.icon("fa5s.trash-alt", color=C["muted"]))
+        clr.setIconSize(QSize(_px(13), _px(13)))
         clr.setFixedWidth(_px(30))
         clr.setToolTip("Clear log")
         clr.clicked.connect(self._clear_log)
         hdr_row.addWidget(clr)
         exp = _btn("", "btn_outline")
-        if _QTA:
-            exp.setIcon(qta.icon("fa5s.file-export", color=C["muted"]))
-            exp.setIconSize(QSize(_px(13), _px(13)))
-        else:
-            exp.setText("Exp")
+        exp.setIcon(qta.icon("fa5s.file-export", color=C["muted"]))
+        exp.setIconSize(QSize(_px(13), _px(13)))
         exp.setFixedWidth(_px(30))
         exp.setToolTip("Export log")
         exp.clicked.connect(self._export_log)
@@ -2265,87 +2283,74 @@ class AMCMainWindow(QMainWindow):
         file_menu = mb.addMenu("File")
         if SaveParameters:
             a = QAction("Save Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.save", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.save", color=C["text2"]))
             a.triggered.connect(self.open_save_params)
             file_menu.addAction(a)
         else:
             a = QAction("Save Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.save", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.save", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "save_params_qt.py not found."))
             file_menu.addAction(a)
         if LoadParameters:
             a = QAction("Load Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.folder-open", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.folder-open", color=C["text2"]))
             a.triggered.connect(self.open_load_params)
             file_menu.addAction(a)
         else:
             a = QAction("Load Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.folder-open", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.folder-open", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "load_params_qt.py not found."))
             file_menu.addAction(a)
 
         ident_menu = mb.addMenu("Identification")
         if ElectricalParametersIdentification:
             a = QAction("Electrical Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.bolt", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.bolt", color=C["text2"]))
             a.triggered.connect(self.open_electrical_params)
             ident_menu.addAction(a)
         else:
             a = QAction("Electrical Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.bolt", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.bolt", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "electrical_params_qt.py not found."))
             ident_menu.addAction(a)
         if InertiaIdentification:
             a = QAction("Mechanical Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.cog", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.cog", color=C["text2"]))
             a.triggered.connect(self.open_mechanical_params)
             ident_menu.addAction(a)
         else:
             a = QAction("Mechanical Parameters", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.cog", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.cog", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "inertia_param_qt.py not found."))
             ident_menu.addAction(a)
 
         term_menu = mb.addMenu("Terminal")
         if Terminal:
             a = QAction("Open Terminal", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.terminal", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.terminal", color=C["text2"]))
             a.triggered.connect(self.open_terminal)
             term_menu.addAction(a)
         else:
             a = QAction("Open Terminal", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.terminal", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.terminal", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "terminal_qt.py not found."))
             term_menu.addAction(a)
 
         monitor_menu = mb.addMenu("Monitoring")
         if ScopeWindow:
             a = QAction("Oscilloscope", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.chart-line", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.chart-line", color=C["text2"]))
             a.triggered.connect(self.open_monitoring)
             monitor_menu.addAction(a)
         else:
             a = QAction("Oscilloscope", self)
-            if _QTA:
-                a.setIcon(qta.icon("fa5s.chart-line", color=C["text2"]))
+            a.setIcon(qta.icon("fa5s.chart-line", color=C["text2"]))
             a.triggered.connect(lambda: _ModernModal.error(self, "Module not found", "scope_qt.py not found."))
             monitor_menu.addAction(a)
 
         help_menu = mb.addMenu("Help")
         a_info = QAction("Info", self)
-        if _QTA:
-            a_info.setIcon(qta.icon("fa5s.info-circle", color=C["text2"]))
+        a_info.setIcon(qta.icon("fa5s.info-circle", color=C["text2"]))
         a_info.triggered.connect(self.open_info)
         help_menu.addAction(a_info)
 
@@ -2566,8 +2571,7 @@ class AMCMainWindow(QMainWindow):
         if visible:
             self._log_splitter_sizes = self._splitter.sizes()
             self._log_panel.setVisible(False)
-            if _QTA:
-                self._log_toggle_btn.setIcon(qta.icon("fa5s.eye", color=C["blue"]))
+            self._log_toggle_btn.setIcon(qta.icon("fa5s.eye", color=C["blue"]))
             self._log_toggle_btn.setToolTip("Show Activity Log")
         else:
             self._log_panel.setVisible(True)
@@ -2578,8 +2582,7 @@ class AMCMainWindow(QMainWindow):
                 total = self._splitter.width()
                 log_w = max(420, total // 3)
                 self._splitter.setSizes([total - log_w, log_w])
-            if _QTA:
-                self._log_toggle_btn.setIcon(qta.icon("fa5s.eye-slash", color=C["muted"]))
+            self._log_toggle_btn.setIcon(qta.icon("fa5s.eye-slash", color=C["muted"]))
             self._log_toggle_btn.setToolTip("Hide Activity Log")
 
     def _toggle_theme(self):
@@ -2590,11 +2593,8 @@ class AMCMainWindow(QMainWindow):
         else:
             C = dict(C_LIGHT)
             _THEME = "light"
-        if _QTA:
-            icon_name = "fa5s.sun" if _THEME == "light" else "fa5s.moon"
-            self._theme_btn.setIcon(qta.icon(icon_name, color=C["muted"]))
-        else:
-            self._theme_btn.setText("◐")
+        icon_name = "fa5s.sun" if _THEME == "light" else "fa5s.moon"
+        self._theme_btn.setIcon(qta.icon(icon_name, color=C["muted"]))
         self._theme_btn.setToolTip(
             "Switch to dark mode" if _THEME == "light" else "Switch to light mode")
         _make_arrow_png(C["muted"], _ARROW_MUTED)
@@ -2628,7 +2628,7 @@ class AMCMainWindow(QMainWindow):
             self._combined_btn.setChecked(False)
             return
         if not hasattr(self, '_scope_window') or self._scope_window is None:
-            dlg = ScopeWindow(self, self.serial)
+            dlg = ScopeWindow(self, self.serial, fpwm=self.fpwm)
             dlg.setWindowModality(Qt.WindowModality.NonModal)
             dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
             dlg.finished.connect(lambda: setattr(self, '_scope_window', None))
@@ -2942,12 +2942,9 @@ class AMCMainWindow(QMainWindow):
         card_lay.setSpacing(10)
 
         icon_lbl = QLabel()
-        if _QTA:
-            try:
-                icon_lbl.setPixmap(qta.icon(icon_name, color=fg).pixmap(QSize(18, 18)))
-            except Exception:
-                icon_lbl.setText("●")
-        else:
+        try:
+            icon_lbl.setPixmap(qta.icon(icon_name, color=fg).pixmap(QSize(18, 18)))
+        except Exception:
             icon_lbl.setText("●")
         card_lay.addWidget(icon_lbl)
 
@@ -3020,6 +3017,10 @@ class AMCMainWindow(QMainWindow):
         except Exception:
             self._show_toast("Invalid baud rate.", "error")
             return
+        _VALID_BAUDS = {9600, 19200, 38400, 57600, 115200, 230400,
+                        460800, 921600, 1000000, 1500000, 2000000}
+        if baud not in _VALID_BAUDS:
+            self._show_toast(f"Non-standard baud {baud} — verify hardware supports it", "warn")
 
         # Always disconnect first to clear any stale serial state
         self.serial.disconnect()
@@ -3027,6 +3028,13 @@ class AMCMainWindow(QMainWindow):
         def worker():
             try:
                 self.serial.connect(port, baud)
+                try:
+                    resp = self.serial.send("g fpwm", expect_response=True)
+                    self.fpwm = dec_decode(resp)
+                    logging.info("Fpwm = %.0f Hz", self.fpwm)
+                except Exception:
+                    self.fpwm = 16000.0
+                    logging.warning("Could not read Fpwm — using 16000 Hz default")
                 self._sig_connect.emit(port, str(baud))
             except Exception as e:
                 logging.exception("Failed to open serial port")
@@ -3338,20 +3346,23 @@ class AMCMainWindow(QMainWindow):
     def _start_status_loop(self):
         self._stop_status_loop()
         self.status_loop_running = True
+        self._status_stop.clear()
         self.status_loop_thread  = threading.Thread(target=self._status_loop, daemon=True)
         self.status_loop_thread.start()
 
     def _stop_status_loop(self):
+        self.status_loop_running = False
+        self._status_stop.set()
         if self.status_loop_thread and self.status_loop_thread.is_alive():
-            self.status_loop_running = False
-            self.status_loop_thread.join(timeout=1.5)
+            self.status_loop_thread.join(timeout=2.0)
         self.status_loop_thread = None
+        self._status_stop.clear()
 
     def _status_loop(self):
         _cm = {0: "MODE_OFF", 1: "MODE_VOLTAGE", 2: "MODE_CURRENT", 3: "MODE_SPEED"}
         _sm = {1: "FixAngle", 2: "Sensor", 3: "Sensorless_BEMF", 4: "Sensorless_HFI"}
         _err_count = 0
-        while self.status_loop_running:
+        while not self._status_stop.is_set():
             if self.serial.is_open:
                 _t0 = time.monotonic()
                 try:
@@ -3387,22 +3398,25 @@ class AMCMainWindow(QMainWindow):
                     break
                 except Exception:
                     pass
-            time.sleep(1)
+            self._status_stop.wait(1.0)
 
     def _start_fault_loop(self):
         self._stop_fault_loop()
         self.fault_loop_running = True
+        self._fault_stop.clear()
         self.fault_loop_thread  = threading.Thread(target=self._fault_loop, daemon=True)
         self.fault_loop_thread.start()
 
     def _stop_fault_loop(self):
+        self.fault_loop_running = False
+        self._fault_stop.set()
         if self.fault_loop_thread and self.fault_loop_thread.is_alive():
-            self.fault_loop_running = False
-            self.fault_loop_thread.join(timeout=1.5)
+            self.fault_loop_thread.join(timeout=2.0)
         self.fault_loop_thread = None
+        self._fault_stop.clear()
 
     def _fault_loop(self):
-        while self.fault_loop_running:
+        while not self._fault_stop.is_set():
             if self.serial.is_open:
                 in_reboot = (time.time() - getattr(self, "_reset_at", 0)) < 30.0
                 if in_reboot:
@@ -3415,33 +3429,39 @@ class AMCMainWindow(QMainWindow):
                 except ValueError as e:
                     logging.debug("fault_loop: no prompt yet: %s", e)
                     self.response_q.put(("update_fault", self.last_valid_fault, None))
-                except Exception:
-                    logging.exception("fault_loop error")
+                except (ConnectionError, OSError) as e:
+                    logging.warning("fault_loop connection error: %s", e)
                     self.response_q.put(("update_fault", self.last_valid_fault, None))
-            time.sleep(1)
+                except Exception:
+                    logging.exception("fault_loop unexpected error")
+                    self.response_q.put(("update_fault", self.last_valid_fault, None))
+            self._fault_stop.wait(1.0)
 
     def _start_get_loop(self):
         self._stop_get_loop()
         self.get_loop_running = True
+        self._get_stop.clear()
         self.get_loop_thread  = threading.Thread(target=self._get_loop, daemon=True)
         self.get_loop_thread.start()
 
     def _stop_get_loop(self):
+        self.get_loop_running = False
+        self._get_stop.set()
         if self.get_loop_thread and self.get_loop_thread.is_alive():
-            self.get_loop_running = False
-            self.get_loop_thread.join(timeout=1.5)
+            self.get_loop_thread.join(timeout=2.0)
         self.get_loop_thread = None
+        self._get_stop.clear()
 
     def _get_loop(self):
         sleep_dur = 0.1
         iters_per_poll = int(1.0 / sleep_dur)
         count = 0
-        while self.get_loop_running:
+        while not self._get_stop.is_set():
             if not self.serial.is_open:
                 break
             if count >= iters_per_poll:
                 for i in range(3):
-                    if not self.get_loop_running or not self.serial.is_open:
+                    if self._get_stop.is_set() or not self.serial.is_open:
                         break
                     var = self._get_var_cache[i] if i < len(self._get_var_cache) else ""
                     if var:
@@ -3453,7 +3473,7 @@ class AMCMainWindow(QMainWindow):
                         except ConnectionError as e:
                             logging.warning("Get loop cable drop: %s", e)
                             self.response_q.put(("disconnect", None, None))
-                            self.get_loop_running = False
+                            self._get_stop.set()
                             break
                         except ValueError:
                             self.response_q.put(("update_get_response", i,
@@ -3463,25 +3483,28 @@ class AMCMainWindow(QMainWindow):
                                                  self.last_valid_get_responses.get(i, "N/A")))
                 count = 0
             count += 1
-            time.sleep(sleep_dur)
+            self._get_stop.wait(sleep_dur)
 
     def _start_cmd_loop(self):
         self._stop_cmd_loop()
         self.cmd_loop_running = True
+        self._cmd_stop.clear()
         self.cmd_loop_thread  = threading.Thread(target=self._cmd_loop, daemon=True)
         self.cmd_loop_thread.start()
 
     def _stop_cmd_loop(self):
+        self.cmd_loop_running = False
+        self._cmd_stop.set()
         if self.cmd_loop_thread and self.cmd_loop_thread.is_alive():
-            self.cmd_loop_running = False
-            self.cmd_loop_thread.join(timeout=1.5)
+            self.cmd_loop_thread.join(timeout=2.0)
         self.cmd_loop_thread = None
+        self._cmd_stop.clear()
 
     def _cmd_loop(self):
         sleep_dur = 0.1
         iters = int(1.0 / sleep_dur)
         count = 0
-        while self.cmd_loop_running:
+        while not self._cmd_stop.is_set():
             if not self.serial.is_open:
                 break
             if count >= iters:
@@ -3493,7 +3516,7 @@ class AMCMainWindow(QMainWindow):
                     break
                 count = 0
             count += 1
-            time.sleep(sleep_dur)
+            self._cmd_stop.wait(sleep_dur)
 
     def _stop_loop_thread(self):
         if hasattr(self, 'loop_thread') and self.loop_thread and \
@@ -3531,7 +3554,7 @@ class AMCMainWindow(QMainWindow):
             f'&nbsp;&nbsp;'
             f'<span style="{badge}">{level[:4].upper()}</span>'
             f'&nbsp;&nbsp;'
-            f'<span style="{term} color:{txt}; font-size:12px;">{message}</span>'
+            f'<span style="{term} color:{txt}; font-size:12px;">{escape(message)}</span>'
         )
         self._log_text.append(html)
         sb = self._log_text.verticalScrollBar()
@@ -3668,7 +3691,7 @@ class AMCMainWindow(QMainWindow):
                 return
             except RuntimeError:
                 pass
-        dlg = ScopeWindow(self, self.serial)
+        dlg = ScopeWindow(self, self.serial, fpwm=self.fpwm)
         dlg.setWindowModality(Qt.WindowModality.NonModal)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.finished.connect(lambda: setattr(self, '_scope_window', None))
@@ -3696,9 +3719,9 @@ class AMCMainWindow(QMainWindow):
             "Closing will disconnect the serial port and stop all monitoring.<br>"
             "Your activity log is saved automatically in the <b>logs/</b> folder.<br><br>"
             "Are you sure you want to exit?",
-            [("Cancel", "secondary"), ("Quit", "danger")],
+            [("Cancel", MODAL_CANCELLED), ("Quit", MODAL_CONFIRMED)],
         )
-        if role != "danger":
+        if role != MODAL_CONFIRMED:
             event.ignore()
             return
         scope = getattr(self, "_scope_window", None)

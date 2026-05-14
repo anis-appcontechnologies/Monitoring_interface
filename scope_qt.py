@@ -9,6 +9,30 @@ Only the UI framework changes: Tkinter -> PySide6, styled to match the
 AMC Interface design system defined in amc_interface_qt.py.
 
 Author: DAGBAGI Mohamed  (PySide6 port: Appcon Technologies)
+
+FILE MAP (search by line number to jump to any section)
+────────────────────────────────────────────────────────
+  L 26   ELF module import shim   (delegates to elf_reader.py)
+  L 365  _ChannelCombo            — channel selector widget with scale combo
+  L 719  _ElfVarPickerDialog      — ELF variable picker dialog
+  L 860  ScopeWindow              — main oscilloscope dialog
+         L 872   __init__              Constructor: layout, state, signals
+         L 2391  _update_button_states Enable/disable action buttons by mode
+         L 2845  _on_configure_clicked Reads UI fields, calls _worker_configure
+         L 3026  _on_ab_toggled        Cursor (A/B marker) mode toggle
+         L 3577  _worker_configure     Background: sends channel setup to MCU
+         L 3739  _worker_record        Background: arm → wait → read (Single Shot)
+         L 3883  _worker_realtime      Background: continuous arm/read loop (RT mode)
+         L 3980  _scroll_setup_axes    Sets up ring-buffer axes for Scroll mode
+         L 4037  _scroll_half_poll_loop Daemon thread: polls rechalf every 5 ms
+         L 4065  _scroll_read_buffer   Reads one scroll frame from MCU binary buffer
+         L 4126  _scroll_display_tick  20 ms QTimer: blits ring-buffer to canvas
+         L 4187  _parse_buffer         Decodes raw bytes → per-channel float lists
+         L 4217  _do_plot              Renders waveform on matplotlib axes
+         L 4338  _on_export_clicked    CSV export
+         L 4382  _on_screenshot_clicked PNG screenshot → screenshots/ folder
+         L 4399  _on_drawstyle_toggled Stairs / smooth toggle (persisted in QSettings)
+         L 4431  closeEvent            Stops threads/timers, saves session config
 """
 
 import os
@@ -19,91 +43,37 @@ import threading
 import time
 import struct
 import logging
+import math
 
 import numpy as np
 
-# ── ELF variable extraction (optional — silently skipped if pyelftools missing)
-try:
-    from elftools.elf.elffile import ELFFile as _ELFFile
-    _HAS_ELFTOOLS = True
-except ImportError:
-    _HAS_ELFTOOLS = False
+# ── ELF variable extraction — delegated to the standalone elf_reader module ──
+# All ELF logic lives in elf_reader.py so it can be maintained, tested, and
+# reviewed independently of the GUI.  scope_qt.py imports the compatibility
+# shims (_elf_load, _elf_read_symbols, _elf_find_in_folder) and the four
+# module-level state globals (_ELF_VARS, _ELF_SYMBOL_INFO, _ELF_LOADED, _ELF_PATH).
+# To change ELF parsing behaviour edit elf_reader.py — do not add ELF code here.
+import elf_reader as _elf_mod
 
-# Module-level store for ELF-extracted variable short names (loaded once)
-_ELF_VARS: list[str] = []          # short display names
-_ELF_VARS_FULL: list[str] = []     # full names (kept for reference, not displayed)
-_ELF_LOADED = False
+_ELF_VARS        = _elf_mod._ELF_VARS
+_ELF_SYMBOL_INFO = _elf_mod._ELF_SYMBOL_INFO
+_ELF_LOADED      = _elf_mod._ELF_LOADED
+_ELF_PATH        = _elf_mod._ELF_PATH
 
-_ELF_GDB_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "SCAN_COMMAND_FILE",
-                             "APPCON_COMMAND_SCAN_GLOBAL_VAR.exe")
-
-
-def _elf_short(full: str) -> str:
-    parts = full.split("_")
-    if len(parts) <= 1:
-        return full
-    return "_".join(parts[-2:]) if parts[-1].isdigit() else parts[-1]
-
-
-def _elf_read_symbols(elf_path: str) -> list:
-    """Read OBJECT symbols from ELF using pyelftools."""
-    out = []
-    if not _HAS_ELFTOOLS:
-        return out
-    try:
-        with open(elf_path, "rb") as f:
-            elf = _ELFFile(f)
-            for sec in elf.iter_sections():
-                if sec.name not in (".symtab", ".dynsym"):
-                    continue
-                for sym in sec.iter_symbols():
-                    if sym.entry["st_info"]["type"] != "STT_OBJECT":
-                        continue
-                    sz   = sym.entry["st_size"]
-                    name = sym.name
-                    if sz == 0 or name.startswith("_") or "." in name:
-                        continue
-                    out.append(name)
-    except Exception as exc:
-        logging.warning("ELF symbol read failed: %s", exc)
-    return out
+_elf_read_symbols   = _elf_mod._elf_read_symbols
+_elf_find_in_folder = _elf_mod._elf_find_in_folder
 
 
 def _elf_load(elf_path: str) -> list:
-    """Load short names from an ELF file. Returns list of short names."""
-    global _ELF_VARS, _ELF_VARS_FULL, _ELF_LOADED
-    full_names = _elf_read_symbols(elf_path)
-    if not full_names:
-        return []
-    _ELF_VARS_FULL = full_names
-    _ELF_VARS      = [_elf_short(n) for n in full_names]
-    _ELF_LOADED    = True
-    return _ELF_VARS
-
-
-def _elf_find_in_folder(folder: str, timeout_s: float = 12.0) -> list:
-    """
-    Walk a project folder and return .elf/.axf paths, Debug/Release first.
-    Raises TimeoutError if the walk takes longer than timeout_s seconds.
-    """
-    import time as _time
-    deadline = _time.monotonic() + timeout_s
-    pref, other = [], []
-    for root, _, files in os.walk(folder):
-        if _time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Folder scan exceeded {timeout_s:.0f} s — "
-                "please select a more specific subfolder (e.g. Debug or Release).")
-        for fn in files:
-            if fn.lower().endswith((".elf", ".axf")):
-                full  = os.path.join(root, fn)
-                mtime = os.path.getmtime(full)
-                (pref if (os.sep + "Debug"   + os.sep in full or
-                          os.sep + "Release" + os.sep in full)
-                       else other).append((mtime, full))
-    pref.sort(reverse=True); other.sort(reverse=True)
-    return [p for _, p in pref] + [p for _, p in other]
+    """Load ELF via elf_reader and sync module-level globals into this namespace."""
+    global _ELF_VARS, _ELF_SYMBOL_INFO, _ELF_LOADED, _ELF_PATH
+    result = _elf_mod._elf_load(elf_path)
+    # Mirror updated globals from elf_reader back into scope_qt namespace
+    _ELF_VARS        = _elf_mod._ELF_VARS
+    _ELF_SYMBOL_INFO = _elf_mod._ELF_SYMBOL_INFO
+    _ELF_LOADED      = _elf_mod._ELF_LOADED
+    _ELF_PATH        = _elf_mod._ELF_PATH
+    return result
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -117,9 +87,11 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPixmap, QCo
 
 try:
     import qtawesome as qta
-    _QTA = True
-except ImportError:
-    _QTA = False
+except ImportError as _qta_err:
+    raise RuntimeError(
+        "QtAwesome is required for consistent icons across all PCs. "
+        "Install with: pip install QtAwesome"
+    ) from _qta_err
 
 import matplotlib
 matplotlib.use("QtAgg")
@@ -154,6 +126,32 @@ VARIABLE_DATATYPES = {
 
 CHANNEL_COLORS = ['#2196F3', '#F44336', '#4CAF50', '#FF9800']
 
+# ── ELF variable → firmware channel code resolution ──────────────────────────
+# Tries exact match in VARIABLE_CODES first (handles built-in names).
+# Falls back to case-insensitive substring match so that ELF names like
+# "Is1_f", "Udc_f", "ISD_filtered" etc. map to the correct firmware code.
+def _resolve_ch_code(name: str) -> int:
+    """Return the firmware channel code for a combo selection.
+    Returns 0 (None) if no match found."""
+    if not name or name == "None":
+        return 0
+    # Exact match (covers all built-in names)
+    if name in VARIABLE_CODES:
+        return VARIABLE_CODES[name]
+    # Case-insensitive exact match
+    upper = name.upper()
+    for key, code in VARIABLE_CODES.items():
+        if key.upper() == upper:
+            return code
+    # Substring match: check if any firmware key appears in the ELF name
+    # e.g. "Is1_f" contains "IS1", "Udc_f" contains "UDC"
+    for key, code in VARIABLE_CODES.items():
+        if code == 0:
+            continue
+        if key.upper() in upper:
+            return code
+    return 0
+
 VARIABLE_UNITS = {
     "None": "",
     "IS1":  "A",   "IS2": "A",  "IS3":  "A",
@@ -173,45 +171,13 @@ def _apply_mono(widget):
 
 
 def _make_maximize_icon(color_hex: str, size: int = 16) -> QIcon:
-    """Expand icon via QtAwesome (fa5s.expand-alt); falls back to hand-drawn corners."""
-    if _QTA:
-        return qta.icon("fa5s.expand-alt", color=color_hex)
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color_hex))
-    pen.setWidth(2)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    m, a = 2, 4
-    p.drawLine(m, m + a, m, m); p.drawLine(m, m, m + a, m)
-    p.drawLine(size - m - a, m, size - m, m); p.drawLine(size - m, m, size - m, m + a)
-    p.drawLine(m, size - m - a, m, size - m); p.drawLine(m, size - m, m + a, size - m)
-    p.drawLine(size - m - a, size - m, size - m, size - m); p.drawLine(size - m, size - m, size - m, size - m - a)
-    p.end()
-    return QIcon(pix)
+    """Expand icon via QtAwesome."""
+    return qta.icon("fa5s.expand-alt", color=color_hex)
 
 
 def _make_restore_icon(color_hex: str, size: int = 16) -> QIcon:
-    """Compress icon via QtAwesome (fa5s.compress-alt); falls back to hand-drawn."""
-    if _QTA:
-        return qta.icon("fa5s.compress-alt", color=color_hex)
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color_hex))
-    pen.setWidth(2)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    c, a = size // 2, 4
-    p.drawLine(c - 1, c - 1, c - a, c - a); p.drawLine(c - a, c - a, c - a, c - a + 2); p.drawLine(c - a, c - a, c - a + 2, c - a)
-    p.drawLine(c + 1, c - 1, c + a, c - a); p.drawLine(c + a, c - a, c + a, c - a + 2); p.drawLine(c + a, c - a, c + a - 2, c - a)
-    p.drawLine(c - 1, c + 1, c - a, c + a); p.drawLine(c - a, c + a, c - a, c + a - 2); p.drawLine(c - a, c + a, c - a + 2, c + a)
-    p.drawLine(c + 1, c + 1, c + a, c + a); p.drawLine(c + a, c + a, c + a, c + a - 2); p.drawLine(c + a, c + a, c + a - 2, c + a)
-    p.end()
-    return QIcon(pix)
+    """Compress icon via QtAwesome."""
+    return qta.icon("fa5s.compress-alt", color=color_hex)
 
 
 def _make_elf_icon(size: int = 16, dark: bool = False) -> QIcon:
@@ -320,13 +286,15 @@ def _make_arrow_png(direction: str, color_hex: str, size: int = 8) -> str:
 
 
 def _make_theme_icon(dark_mode: bool, size: int = 18) -> QIcon:
-    """Sun (switch to dark) or moon (switch to light) via QtAwesome; falls back to hand-drawn."""
-    if _QTA:
-        # When currently in dark mode show sun (switch to light); when light show moon (switch to dark)
-        if dark_mode:
-            return qta.icon("fa5s.sun", color="#F59E0B")
-        else:
-            return qta.icon("fa5s.moon", color="#7C8DB5")
+    """Sun (switch to dark) or moon (switch to light) via QtAwesome."""
+    if dark_mode:
+        return qta.icon("fa5s.sun", color="#F59E0B")
+    else:
+        return qta.icon("fa5s.moon", color="#7C8DB5")
+
+
+def _make_theme_icon_fallback(dark_mode: bool, size: int = 18) -> QIcon:
+    """Kept for reference only — not used. QtAwesome version is always used."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -711,13 +679,10 @@ QPushButton#sc_combo_row_rem:pressed {{
                 rem.setFixedSize(22, 22)
                 rem.setCursor(Qt.CursorShape.PointingHandCursor)
                 rem.setToolTip(f"Remove '{name}'")
-                if _QTA:
-                    try:
-                        rem.setIcon(qta.icon("fa5s.trash-alt", color="white"))
-                        rem.setIconSize(QSize(11, 11))
-                    except Exception:
-                        rem.setText("−")
-                else:
+                try:
+                    rem.setIcon(qta.icon("fa5s.trash-alt", color="white"))
+                    rem.setIconSize(QSize(11, 11))
+                except Exception:
                     rem.setText("−")
                 rem.clicked.connect(
                     lambda checked=False, i=idx: self._remove_from_popup(i))
@@ -754,38 +719,13 @@ QPushButton#sc_combo_row_rem:pressed {{
         name = self._items[index] if 0 <= index < len(self._items) else ""
         if name in self._PROTECTED:
             return
-        # surgical removal: hide and schedule delete of only the affected row widget
-        if 0 <= index < len(self._popup_row_widgets):
-            row_widget = self._popup_row_widgets.pop(index)
-            self._popup_lay.removeWidget(row_widget)
-            row_widget.hide()
-            row_widget.deleteLater()
-            # re-wire click indices for rows that shifted down
-            for new_idx in range(index, len(self._popup_row_widgets)):
-                w = self._popup_row_widgets[new_idx]
-                btns = w.findChildren(QPushButton)
-                if btns:
-                    try:
-                        btns[0].clicked.disconnect()
-                    except Exception:
-                        pass
-                    btns[0].clicked.connect(
-                        lambda checked=False, i=new_idx: self._select(i))
-                if len(btns) > 1:
-                    try:
-                        btns[1].clicked.disconnect()
-                    except Exception:
-                        pass
-                    btns[1].clicked.connect(
-                        lambda checked=False, i=new_idx: self._remove_from_popup(i))
-            if self._popup:
-                n = len(self._popup_row_widgets)
-                self._popup.setFixedHeight(min(n * 30 + 4, 8 * 30 + 4))
         self._items.pop(index)
         if self._current >= len(self._items):
             self._current = max(0, len(self._items) - 1)
         self._refresh_display()
         self.currentIndexChanged.emit(self._current)
+        # Rebuild all rows — simpler and avoids index re-wiring bugs
+        self._rebuild_popup_rows()
         if self._toast_cb and name:
             self._toast_cb(
                 f"Removed '{name}' from this channel's variable list", "error"
@@ -879,6 +819,14 @@ class _ElfVarPickerDialog(QDialog):
 
             lbl = QLabel(name)
             lbl.setObjectName("sc_ch_name")
+            info = _ELF_SYMBOL_INFO.get(name)
+            if info:
+                addr, sz = info
+                code = _resolve_ch_code(name)
+                tip = f"addr: 0x{addr:08X}  size: {sz}B"
+                if code:
+                    tip += f"  fw-code: {code}"
+                lbl.setToolTip(tip)
             row.addWidget(lbl, 1)
 
             already_in = name in combo_items
@@ -943,6 +891,7 @@ class ScopeWindow(QDialog):
     _sig_show_warning   = Signal(str, str)                 # title, message
     _sig_elf_loaded     = Signal(int)                      # count of vars loaded
     _sig_elf_scanning   = Signal()                         # folder scan started
+    _sig_elf_reloaded   = Signal(int)                      # auto-reload after reflash
 
     def __init__(self, parent, serial_manager, fpwm=16000.0):
         super().__init__(parent)
@@ -968,8 +917,10 @@ class ScopeWindow(QDialog):
         self._scroll_frame_count  = 0
         self._scroll_lock         = threading.Lock()
         self._scroll_rechalf_val  = 0
-        self._scroll_poll_timer   = None
+        self._scroll_poll_timer   = None   # kept for closeEvent cleanup compat
         self._scroll_display_timer= None
+        self._scroll_half_stop    = threading.Event()
+        self._scroll_half_thread  = None
         self._last_plot_data      = None
         self._has_plot_data       = False
         self._ylim_locked         = None
@@ -986,12 +937,16 @@ class ScopeWindow(QDialog):
         self._cursor_b_line       = None  # vline artist
         # Trigger
         self._trigger_enabled     = False
+        self._trigger_line        = None   # matplotlib axhline artist
+        self._trig_drag_active    = False  # dragging the trigger line
         self._pan_release_cid     = None
         self._leg_pick_cid        = None
         self._leg_line_map        = {}
         self._plotted_lines       = {}
         self._legend_obj          = None
         self._hide_labels         = False
+        # Per-channel visibility (persists across RT redraws)
+        self._ch_hidden: set      = set()
         # Per-channel display scale multipliers (plot only; raw data preserved)
         self._ch_scale            = [1.0, 1.0, 1.0, 1.0]
         self._ch_scale_combos: list = []
@@ -1018,6 +973,13 @@ class ScopeWindow(QDialog):
         self._sig_show_warning.connect(self._slot_show_warning)
         self._sig_elf_loaded.connect(self._on_elf_loaded_slot)
         self._sig_elf_scanning.connect(self._on_elf_scanning_slot)
+        self._sig_elf_reloaded.connect(self._on_elf_reloaded_slot)
+
+        # ELF file watcher — detects reflash (file changed) or deletion
+        from PySide6.QtCore import QFileSystemWatcher
+        self._elf_watcher = QFileSystemWatcher(self)
+        self._elf_watcher.fileChanged.connect(self._on_elf_file_changed)
+        self._elf_watched_path: str = ""
         self._elf_spinner_timer: QTimer | None = None
         self._elf_spinner_step  = 0
         self._elf_banner: "QFrame | None" = None
@@ -1366,23 +1328,51 @@ class ScopeWindow(QDialog):
         self._btn_scroll.clicked.connect(self._on_scroll_clicked)
         btn_row.addWidget(self._btn_scroll)
 
-        self._btn_export = QPushButton("Export…")
+        self._btn_export = QPushButton("Export CSV…")
         self._btn_export.setObjectName("sc_btn_outline")
         self._btn_export.setEnabled(False)
         self._btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_export.setFixedHeight(30)
-        self._btn_export.setToolTip("Export waveform as CSV or PNG  [Ctrl+E]")
+        self._btn_export.setToolTip("Export waveform data as CSV  [Ctrl+E]")
         self._btn_export.clicked.connect(self._on_export_clicked)
         btn_row.addWidget(self._btn_export)
 
+        self._btn_screenshot = QPushButton()
+        self._btn_screenshot.setObjectName("sc_btn_outline")
+        self._btn_screenshot.setEnabled(False)
+        self._btn_screenshot.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_screenshot.setFixedSize(30, 30)
+        self._btn_screenshot.setIcon(qta.icon("fa5s.camera", color="#7B9AB8"))
+        self._btn_screenshot.setIconSize(QSize(14, 14))
+        self._btn_screenshot.setToolTip("Save PNG screenshot of current waveform")
+        self._btn_screenshot.clicked.connect(self._on_screenshot_clicked)
+        btn_row.addWidget(self._btn_screenshot)
+
         btn_row.addStretch(1)
 
-        # ── Tool buttons: Cursors | Zoom ─────────────────────────────────────
-        self._btn_ab = QPushButton("Cursors: OFF")
+        # ── Tool buttons: Draw style | Cursors ───────────────────────────────
+        self._drawstyle = QSettings("Appcon Technologies", "AMC Interface").value(
+            "scope/drawstyle", "steps-post")
+        self._btn_drawstyle = QPushButton()
+        self._btn_drawstyle.setObjectName("sc_btn_tool")
+        self._btn_drawstyle.setCheckable(True)
+        self._btn_drawstyle.setChecked(self._drawstyle == "steps-post")
+        self._btn_drawstyle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_drawstyle.setFixedSize(30, 30)
+        _ds_icon = "fa5s.signal" if self._drawstyle == "steps-post" else "fa5s.chart-line"
+        self._btn_drawstyle.setIcon(qta.icon(_ds_icon, color="#7B9AB8"))
+        self._btn_drawstyle.setIconSize(QSize(14, 14))
+        self._btn_drawstyle.setToolTip("Toggle staircase / smooth waveform style")
+        self._btn_drawstyle.clicked.connect(self._on_drawstyle_toggled)
+        btn_row.addWidget(self._btn_drawstyle)
+
+        self._btn_ab = QPushButton()
         self._btn_ab.setObjectName("sc_btn_tool")
         self._btn_ab.setCheckable(True)
         self._btn_ab.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_ab.setFixedHeight(30)
+        self._btn_ab.setFixedSize(30, 30)
+        self._btn_ab.setIcon(qta.icon("fa5s.crosshairs", color="#7B9AB8"))
+        self._btn_ab.setIconSize(QSize(14, 14))
         self._btn_ab.setToolTip(
             "Measurement cursors — click graph to place marker A, click again for marker B\n"
             "Time gap (DT) and value gap (DY) between A and B appear in the bar below the graph\n"
@@ -1438,9 +1428,10 @@ class ScopeWindow(QDialog):
         self._spin_trig_level.setFixedWidth(80)
         self._spin_trig_level.setCursor(Qt.CursorShape.PointingHandCursor)
         self._spin_trig_level.setEnabled(False)
-        self._spin_trig_level.setToolTip("Threshold value — capture fires when channel crosses this level")
+        self._spin_trig_level.setToolTip("Threshold value — capture fires when channel crosses this level\nYou can also drag the orange dashed line on the graph")
         self._spin_trig_level.setKeyboardTracking(False)
         self._spin_trig_level.lineEdit().returnPressed.connect(self._spin_trig_level.editingFinished.emit)
+        self._spin_trig_level.valueChanged.connect(self._on_trig_level_changed)
         _apply_mono(self._spin_trig_level)
         trig_row.addWidget(self._spin_trig_level)
 
@@ -1553,11 +1544,22 @@ class ScopeWindow(QDialog):
         self._live_strip.setVisible(False)
         graph_lay.addWidget(self._live_strip)
 
-        self._lbl_coords = QLabel("  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom")
+        self._lbl_coords = QLabel()
         self._lbl_coords.setObjectName("sc_coords_label")
         self._lbl_coords.setAlignment(Qt.AlignmentFlag.AlignLeft)
         _apply_mono(self._lbl_coords)
         graph_lay.addWidget(self._lbl_coords)
+
+        # Scroll hint overlay — drawn on the axes, fades/animates until first click
+        self._hint_active     = True
+        self._hint_step       = 0
+        self._hint_ax_text    = None   # matplotlib Text artist on the axes
+        self._hint_static     = "  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom"
+        self._lbl_coords.setText(self._hint_static)
+        self._hint_timer      = QTimer(self)
+        self._hint_timer.setInterval(480)
+        self._hint_timer.timeout.connect(self._tick_hint)
+        self._hint_timer.start()
 
         body_lay.addWidget(graph_frame, 4)
 
@@ -1603,6 +1605,59 @@ class ScopeWindow(QDialog):
         except Exception:
             pass
         self.canvas.draw()
+
+    # Alternating hand icons for scroll hint
+    _HINT_ICONS = ["\U0001F44B", "\U0001F91A"]
+
+    def _ensure_hint_text(self):
+        """Create (or re-create) the on-graph hint annotation after a plot."""
+        if not self._hint_active:
+            return
+        p = _get_palette()
+        dark = self._is_dark(p)
+        hint_color = "#AAAACC" if dark else "#8888AA"
+        if self._hint_ax_text is not None:
+            try:
+                self._hint_ax_text.remove()
+            except Exception:
+                pass
+        icon = self._HINT_ICONS[self._hint_step % 2]
+        self._hint_ax_text = self.ax.text(
+            0.5, 0.07,
+            f"{icon}  Scroll wheel to zoom  |  Right-click + drag to pan",
+            transform=self.ax.transAxes,
+            ha='center', va='center',
+            fontsize=9, color=hint_color,
+            alpha=0.75,
+            style='italic',
+            zorder=10,
+        )
+
+    def _tick_hint(self):
+        if not self._hint_active:
+            return
+        self._hint_step += 1
+        if self._hint_ax_text is not None:
+            icon = self._HINT_ICONS[self._hint_step % 2]
+            self._hint_ax_text.set_text(
+                f"{icon}  Scroll wheel to zoom  |  Right-click + drag to pan"
+            )
+            self._blit_bg = None
+            self.canvas.draw_idle()
+
+    def _stop_hint(self):
+        if not self._hint_active:
+            return
+        self._hint_active = False
+        self._hint_timer.stop()
+        if self._hint_ax_text is not None:
+            try:
+                self._hint_ax_text.remove()
+            except Exception:
+                pass
+            self._hint_ax_text = None
+            self._blit_bg = None
+            self.canvas.draw_idle()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  STYLING
@@ -2561,6 +2616,7 @@ QDialog QLineEdit#sc_combo {{
         self._show_elf_banner("ok",
             f"{count} variables loaded — click  +  on any channel to add them")
         self._apply_style()
+        self._elf_start_watch(_ELF_PATH)
 
     def _on_ch_plus(self, ch_idx: int):
         """Open the ELF variable picker for channel ch_idx."""
@@ -2577,6 +2633,67 @@ QDialog QLineEdit#sc_combo {{
                                   toast_cb=toast_cb)
         dlg.exec()
 
+    # ── ELF file watcher ──────────────────────────────────────────────────────
+
+    def _elf_start_watch(self, path: str):
+        """Register path with QFileSystemWatcher. Clears any previous watch."""
+        if not path:
+            return
+        if self._elf_watched_path and self._elf_watched_path != path:
+            self._elf_watcher.removePath(self._elf_watched_path)
+        self._elf_watched_path = path
+        self._elf_watcher.addPath(path)
+        logging.debug("SCOPE ELF watcher: watching %s", path)
+
+    def _on_elf_file_changed(self, path: str):
+        """Called by QFileSystemWatcher when the ELF file is modified or deleted.
+        Runs on the main thread (Qt signal)."""
+        if not os.path.isfile(path):
+            # File was deleted — show error banner, keep old symbols in memory
+            self._show_elf_banner("error",
+                "ELF file removed from disk. Reconnect after reflash or reload manually.")
+            return
+
+        # File changed (reflash completed) — reload in background so UI stays responsive.
+        # Small delay: some flashers write the file then rename it, causing a brief gap.
+        QTimer.singleShot(800, lambda: self._elf_reload_worker(path))
+
+    def _elf_reload_worker(self, path: str):
+        """Background thread: reload ELF after reflash, emit _sig_elf_reloaded."""
+        def _worker():
+            if not os.path.isfile(path):
+                self._sig_elf_reloaded.emit(-1)
+                return
+            names = _elf_load(path)
+            self._sig_elf_reloaded.emit(len(names))
+            # Re-arm the watcher — some OS remove the watch after a rename/replace
+            self._elf_watcher.addPath(path)
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_elf_reloaded_slot(self, count: int):
+        """Main-thread handler after auto-reload on reflash."""
+        if count <= 0:
+            self._show_elf_banner("error",
+                "ELF reload failed after reflash — file may still be locked. "
+                "Reload manually once flashing completes.")
+            return
+
+        # Update button tooltip and banner
+        self._btn_elf_load.setToolTip(f"ELF reloaded — {count} variables")
+        self._show_elf_banner("ok",
+            f"ELF reloaded after reflash — {count} variables updated")
+
+        # Refresh every open picker dialog and channel combos:
+        # variables that still exist keep their position; removed ones are pruned.
+        current_names = set(_ELF_VARS)
+        for cb in self._ch_combos:
+            for i in range(cb.count() - 1, -1, -1):
+                item = cb.itemText(i)
+                # Remove items that came from ELF but are no longer in the new symbol table
+                if item not in VARIABLE_CODES and item not in current_names:
+                    cb.removeItem(i)
+
+        logging.info("SCOPE ELF auto-reloaded: %d symbols from %s", count, _ELF_PATH)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  CONFIG CHANGE TRACKING
@@ -2599,8 +2716,7 @@ QDialog QLineEdit#sc_combo {{
             self.is_configured = False
             self._realtime_running = False
             self._scroll_running   = False
-            if self._scroll_poll_timer is not None:
-                self._scroll_poll_timer.stop()
+            self._scroll_half_stop.set()
             if self._scroll_display_timer is not None:
                 self._scroll_display_timer.stop()
             self._set_status("Config changed — re-configure scope")
@@ -2612,7 +2728,7 @@ QDialog QLineEdit#sc_combo {{
         p = _get_palette()
         faint = p.get('faint', '#555555')
         for i, (dot, combo) in enumerate(zip(self._ch_dots, self._ch_combos)):
-            code = VARIABLE_CODES.get(combo.currentText(), 0)
+            code = _resolve_ch_code(combo.currentText())
             color = CHANNEL_COLORS[i] if code != 0 else faint
             dot.setStyleSheet(f"color: {color}; font-size: 14px; background: transparent;")
 
@@ -2620,7 +2736,7 @@ QDialog QLineEdit#sc_combo {{
         try:
             rt_ms    = self._spin_rectime.value()
             fs       = self._spin_samplefreq.value()
-            n_active = sum(1 for cb in self._ch_combos if VARIABLE_CODES.get(cb.currentText(), 0) != 0)
+            n_active = sum(1 for cb in self._ch_combos if _resolve_ch_code(cb.currentText()) != 0)
             n_active = max(n_active, 1)
             max_buf  = 8000 // (n_active * 4)
             period_div = max(1, round(fs and self.fpwm / fs or 1))
@@ -2697,20 +2813,24 @@ QDialog QLineEdit#sc_combo {{
         self._on_config_changed()
 
     def _update_auto_value(self, rectime_max=False, samplefreq_max=False):
-        n_active = sum(1 for cb in self._ch_combos if VARIABLE_CODES.get(cb.currentText(), 0) != 0)
+        n_active = sum(1 for cb in self._ch_combos if _resolve_ch_code(cb.currentText()) != 0)
         n_active = max(n_active, 1)
         max_samples = 8000 // (n_active * 4)
 
         if rectime_max:
             fs = self._spin_samplefreq.value()
             if fs > 0:
-                self._spin_rectime.setValue((max_samples / fs) * 1000.0)
+                period_div = max(1, round(self.fpwm / fs))
+                actual_fs  = self.fpwm / period_div
+                self._spin_rectime.setValue(max_samples / actual_fs * 1000.0)
 
         if samplefreq_max:
             rt_ms = self._spin_rectime.value()
             if rt_ms > 0:
-                fs_max = min(max_samples / (rt_ms / 1000.0), self.fpwm)
-                self._spin_samplefreq.setValue(fs_max)
+                ideal_fs   = max_samples / (rt_ms / 1000.0)
+                period_div = max(1, math.ceil(self.fpwm / ideal_fs))
+                actual_fs  = self.fpwm / period_div
+                self._spin_samplefreq.setValue(actual_fs)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  NO-PORT WARNING
@@ -2760,7 +2880,8 @@ QDialog QLineEdit#sc_combo {{
         self._start_configure_spinner()
         # Read all UI state on main thread before handing off to worker
         cfg_params = {
-            'ch_codes':    [VARIABLE_CODES.get(cb.currentText(), 0) for cb in self._ch_combos],
+            'ch_codes':    [_resolve_ch_code(cb.currentText()) for cb in self._ch_combos],
+            'ch_names':    [cb.currentText() for cb in self._ch_combos],
             'rec_time_ms': self._spin_rectime.value(),
             'sample_freq': self._spin_samplefreq.value(),
             't_display':   self._spin_tdisplay.value(),
@@ -2863,6 +2984,7 @@ QDialog QLineEdit#sc_combo {{
             self._scroll_t_display = t_display
             self._scroll_frame_count = 0
             self._scroll_running  = True
+            self._scroll_ch_names = cfg.get('ch_names', ['None'] * 4)
             # Build axes once
             self._scroll_setup_axes(cfg['ch_codes'], t_display, ring_size)
             self._update_button_states()
@@ -2877,10 +2999,13 @@ QDialog QLineEdit#sc_combo {{
                 self._scroll_running = False
                 self._update_button_states()
                 return
-            # Start QTimer-based poll (non-blocking, on main thread)
-            self._scroll_poll_timer = QTimer(self)
-            self._scroll_poll_timer.timeout.connect(self._scroll_poll_half)
-            self._scroll_poll_timer.start(5)
+            # Start daemon poller thread (off main thread — eliminates main-thread I/O)
+            self._scroll_half_stop.clear()
+            self._scroll_half_thread = threading.Thread(
+                target=self._scroll_half_poll_loop, daemon=True,
+                name="ScrollHalfPoller",
+            )
+            self._scroll_half_thread.start()
             # Start display refresh timer
             self._scroll_display_timer = QTimer(self)
             self._scroll_display_timer.timeout.connect(self._scroll_display_tick)
@@ -2924,7 +3049,9 @@ QDialog QLineEdit#sc_combo {{
 
     def _on_ab_toggled(self, checked):
         self._ab_mode = checked
-        self._btn_ab.setText("Cursors: ON" if checked else "Cursors: OFF")
+        p = _get_palette()
+        _c = p.get("red", "#F87171") if checked else "#7B9AB8"
+        self._btn_ab.setIcon(qta.icon("fa5s.crosshairs", color=_c))
         if not checked:
             self._cursor_a = None
             self._cursor_b = None
@@ -2983,6 +3110,7 @@ QDialog QLineEdit#sc_combo {{
         self.canvas.draw_idle()
 
     def _on_scroll_zoom(self, event):
+        self._stop_hint()
         if self._realtime_running:
             from PySide6.QtWidgets import QToolTip
             from PySide6.QtGui import QCursor
@@ -3040,6 +3168,16 @@ QDialog QLineEdit#sc_combo {{
 
     def _on_pan_motion(self, event):
         """Right-click drag pan using pixel coordinates — no drift."""
+        # Trigger line drag (left-button)
+        if self._trig_drag_active:
+            if event.inaxes is self.ax and event.ydata is not None:
+                self._trigger_line.set_ydata([event.ydata, event.ydata])
+                self._spin_trig_level.blockSignals(True)
+                self._spin_trig_level.setValue(event.ydata)
+                self._spin_trig_level.blockSignals(False)
+                self._blit_bg = None
+                self.canvas.draw_idle()
+            return
         if not self._pan_active:
             return
         if event.x is None or event.y is None:
@@ -3063,6 +3201,13 @@ QDialog QLineEdit#sc_combo {{
         self.canvas.draw_idle()
 
     def _on_pan_release(self, event):
+        if self._trig_drag_active and event.button == 1:
+            self._trig_drag_active = False
+            if self._ab_mode:
+                self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+            return
         if event.button == 3:
             self._pan_active = False
             self._pan_start_px   = None
@@ -3081,13 +3226,24 @@ QDialog QLineEdit#sc_combo {{
         orig_line = leg_map[artist]
         visible = not orig_line.get_visible()
         orig_line.set_visible(visible)
-        # Refresh all handle + text alphas for this line
+        # Persist hidden state so RT redraws respect it
+        ch_idx = next((i for i, l in self._plotted_lines.items() if l is orig_line), None)
+        if ch_idx is not None:
+            if visible:
+                self._ch_hidden.discard(ch_idx)
+            else:
+                self._ch_hidden.add(ch_idx)
+        # Refresh handle color + text for every entry in the legend
         if self._legend_obj is not None:
             p = _get_palette()
-            for a, ol in leg_map.items():
-                if ol is not orig_line:
+            for leg_line, orig in zip(self._legend_obj.get_lines(),
+                                      [leg_map.get(ll) for ll in self._legend_obj.get_lines()]):
+                if orig is None:
                     continue
-                a.set_alpha(1.0 if visible else (0.35 if hasattr(a, 'get_text') else 0.2))
+                ov = orig.get_visible()
+                orig_color = orig.get_color()
+                leg_line.set_alpha(1.0 if ov else 0.2)
+                leg_line.set_color(orig_color if ov else p['muted'])
             for txt in self._legend_obj.get_texts():
                 ol = leg_map.get(txt)
                 if ol is not None:
@@ -3110,10 +3266,68 @@ QDialog QLineEdit#sc_combo {{
         self._combo_trig_ch.setEnabled(checked)
         self._combo_trig_edge.setEnabled(checked)
         self._spin_trig_level.setEnabled(checked)
+        self._update_trigger_line()
+
+    def _update_trigger_line(self):
+        """Show or hide the draggable trigger line on the axes."""
+        if not self._trigger_enabled or not self._has_plot_data:
+            if self._trigger_line is not None:
+                try:
+                    self._trigger_line.remove()
+                except Exception:
+                    pass
+                self._trigger_line = None
+                self._blit_bg = None
+                self.canvas.draw_idle()
+            return
+        level = self._spin_trig_level.value()
+        p = _get_palette()
+        if self._trigger_line is None:
+            self._trigger_line = self.ax.axhline(
+                y=level,
+                color='#FF6B35',
+                linewidth=1.5,
+                linestyle='--',
+                zorder=5,
+                label='_trigger',
+                picker=6,
+            )
+        else:
+            self._trigger_line.set_ydata([level, level])
+        self._blit_bg = None
+        self.canvas.draw_idle()
+
+    def _on_trig_level_changed(self, value):
+        """Keep the trigger line in sync when the spinbox is changed manually."""
+        if self._trigger_line is not None:
+            self._trigger_line.set_ydata([value, value])
+            self._blit_bg = None
+            self.canvas.draw_idle()
+
+    def _trig_line_hit(self, event) -> bool:
+        """Return True if the mouse event is within 6 display-pixels of the trigger line."""
+        if self._trigger_line is None or not self._trigger_enabled:
+            return False
+        if event.ydata is None:
+            return False
+        try:
+            inv = self.ax.transData
+            _, y_px     = inv.transform((0, event.ydata))
+            _, trig_px  = inv.transform((0, self._trigger_line.get_ydata()[0]))
+            return abs(y_px - trig_px) < 8
+        except Exception:
+            return False
 
     def _on_canvas_click(self, event):
+        self._stop_hint()
         if event.inaxes is not self.ax or event.xdata is None:
             return
+        # Left-click near trigger line → start drag
+        if event.button == 1 and not self._ab_mode and not event.dblclick:
+            if self._trig_line_hit(event):
+                self._trig_drag_active = True
+                self.canvas.setCursor(Qt.CursorShape.SizeVerCursor)
+                return
         # Double left-click: reset zoom to full data extents
         if event.dblclick and event.button == 1 and not self._ab_mode:
             self._on_dblclick_reset()
@@ -3241,9 +3455,10 @@ QDialog QLineEdit#sc_combo {{
             pad = [old_times[0] - (ring_size - len(old_times) - i) * dt
                    for i in range(ring_size - len(old_times))] if old_times else [0.0] * (ring_size - len(old_times))
             new_times = pad + old_times
-        self._scroll_rings     = new_rings
-        self._scroll_t_ring    = collections.deque(new_times, maxlen=ring_size)
-        self._scroll_t_display = t_display
+        with self._scroll_lock:
+            self._scroll_rings     = new_rings
+            self._scroll_t_ring    = collections.deque(new_times, maxlen=ring_size)
+            self._scroll_t_display = t_display
         self._scroll_setup_axes(self.last_config['ch_codes'], t_display, ring_size)
         logging.debug("SCOPE _on_tdisplay_change: resized rings to %d pts", ring_size)
 
@@ -3270,6 +3485,10 @@ QDialog QLineEdit#sc_combo {{
     def _on_mouse_move(self, event):
         """Smooth crosshair via blitting — no per-frame annotation overhead."""
         if self._pan_active:
+            return
+        # Show resize cursor when hovering near the trigger line
+        if self._trig_line_hit(event):
+            self.canvas.setCursor(Qt.CursorShape.SizeVerCursor)
             return
         # Change cursor to pointer when hovering over the legend
         leg = getattr(self, '_legend_obj', None)
@@ -3393,7 +3612,14 @@ QDialog QLineEdit#sc_combo {{
             sample_freq = cfg_params['sample_freq']
             t_display   = cfg_params['t_display']
 
-            n_active = sum(1 for c in ch_codes if c != 0)
+            ch_names_cfg = cfg_params.get('ch_names', ["None"] * 4)
+            # A channel is active if it has a firmware code OR a valid ELF RAM address
+            def _ch_active(i):
+                if ch_codes[i] != 0:
+                    return True
+                info = _ELF_SYMBOL_INFO.get(ch_names_cfg[i])
+                return info is not None and info[0] >= 0x20000000
+            n_active = sum(1 for i in range(4) if _ch_active(i))
             if n_active == 0:
                 raise ValueError("Select at least one channel.")
 
@@ -3411,13 +3637,32 @@ QDialog QLineEdit#sc_combo {{
 
             expected_bytes = sum(
                 n_samples * (4 if ch_datatypes[i] == 1 else 2)
-                for i, c in enumerate(ch_codes) if c != 0
+                for i in range(4) if _ch_active(i)
             )
 
             if expected_bytes > 8000:
                 raise ValueError(f"Buffer overflow: {expected_bytes} bytes needed, limit is 8000 bytes.")
             if n_samples > 4000:
                 raise ValueError(f"Too many samples: {n_samples} > limit 4000")
+
+            # Determine whether to use address-based recvar (ELF variables) or
+            # the legacy recad code path (built-in named variables only).
+            # Priority: if the channel name exists in _ELF_SYMBOL_INFO with a
+            # valid RAM address, always use the address (works for ANY variable).
+            # Fall back to the firmware code only when no ELF address is available.
+            ch_names    = cfg_params.get('ch_names', ["None"] * 4)
+            ch_addrs    = []   # resolved address per channel (0 = use recad code)
+            use_recvar  = False
+            for i, name in enumerate(ch_names):
+                info = _ELF_SYMBOL_INFO.get(name)
+                if info:
+                    addr = info[0]
+                    # Only use address if it points into MCU RAM (0x20000000+)
+                    if addr >= 0x20000000:
+                        ch_addrs.append(addr)
+                        use_recvar = True
+                        continue
+                ch_addrs.append(0)
 
             recad_value = (ch_codes[0] * 1_000_000 + ch_codes[1] * 10_000 +
                            ch_codes[2] * 100        + ch_codes[3])
@@ -3431,31 +3676,42 @@ QDialog QLineEdit#sc_combo {{
                     ser.write(f"#s {name_padded} {value_str};\n".encode("ascii"))
                     time.sleep(0.02)
 
-                _send_set("recad",  recad_value)
+                if use_recvar:
+                    # Address-based path: send per-channel RAM addresses.
+                    # Firmware must implement: #s rcva1/rcva2/rcva3/rcva4 <uint32_addr>
+                    # When rcva1..4 are non-zero, firmware reads those addresses
+                    # directly from RAM instead of using the recad code table.
+                    for i, addr in enumerate(ch_addrs):
+                        var_name = f"rcva{i+1}"
+                        _send_set(var_name, float(addr))
+                    logging.info("SCOPE SET (recvar): addrs=%s recns=%d recap=%d rectyp=%d",
+                                 [f"0x{a:08X}" for a in ch_addrs],
+                                 n_samples, period_div, rectyp_value)
+                else:
+                    _send_set("recad",  recad_value)
+                    logging.info("SCOPE SET: recad=%d recns=%d recap=%d rectyp=%d",
+                                 recad_value, n_samples, period_div, rectyp_value)
+
                 _send_set("recns",  n_samples)
                 _send_set("recap",  period_div)
                 _send_set("rectyp", rectyp_value)
 
-                logging.info("SCOPE SET: recad=%d recns=%d recap=%d rectyp=%d",
-                             recad_value, n_samples, period_div, rectyp_value)
+            # Lock released here — sets are done, verify reads use short per-call locks
 
-                def _send_get(name):
-                    ser.write(f"#g {name.ljust(6)};\n".encode("ascii"))
-                    try:
-                        ser.readline()  # discard "->" prompt
-                        resp = ser.readline().decode("ascii", errors="ignore").strip("\r\n ")
-                        return resp
-                    except Exception as e:
-                        return f"<error: {e}>"
+            def _verify_get(name):
+                try:
+                    return self.serial_manager.send(f"g {name.ljust(6)}", expect_response=True)
+                except Exception as e:
+                    return f"<error: {e}>"
 
-                rb_recns  = _send_get("recns")
-                rb_recap  = _send_get("recap")
-                rb_rectyp = _send_get("rectyp")
-                rb_recad  = _send_get("recad")
-                logging.info("SCOPE VERIFY: recns=%s (sent %d)", rb_recns, n_samples)
-                logging.info("SCOPE VERIFY: recap=%s (sent %d)", rb_recap, period_div)
-                logging.info("SCOPE VERIFY: rectyp=%s (sent %d)", rb_rectyp, rectyp_value)
-                logging.info("SCOPE VERIFY: recad=%s (sent %d)", rb_recad, recad_value)
+            rb_recns  = _verify_get("recns")
+            rb_recap  = _verify_get("recap")
+            rb_rectyp = _verify_get("rectyp")
+            rb_recad  = _verify_get("recad")
+            logging.info("SCOPE VERIFY: recns=%s (sent %d)", rb_recns, n_samples)
+            logging.info("SCOPE VERIFY: recap=%s (sent %d)", rb_recap, period_div)
+            logging.info("SCOPE VERIFY: rectyp=%s (sent %d)", rb_rectyp, rectyp_value)
+            logging.info("SCOPE VERIFY: recad=%s (sent %d)", rb_recad, recad_value)
 
             self.last_config = {
                 'ch_codes':       ch_codes,
@@ -3467,6 +3723,7 @@ QDialog QLineEdit#sc_combo {{
                 'expected_bytes': expected_bytes,
                 'rec_time_s':     rec_time_s,
                 't_display':      t_display,
+                'ch_names':       ch_names,
             }
             self.is_configured = True
             ch_names = [VARIABLE_NAMES.get(c, '?') for c in ch_codes if c != 0]
@@ -3526,19 +3783,23 @@ QDialog QLineEdit#sc_combo {{
             # Trigger wait loop: poll the trigger channel until condition is met
             if trig_enabled:
                 trig_ch_code = cfg['ch_codes'][trig_ch_idx]
-                trig_var_name = VARIABLE_NAMES.get(trig_ch_code, "")
-                if trig_var_name and trig_var_name != "None":
-                    self._set_status(f"Waiting for trigger on Ch{trig_ch_idx+1} ({trig_var_name}) "
+                # Firmware command key is the lowercase display name (e.g. "ISQ" → "isq")
+                # For built-in codes find the key in VARIABLE_CODES; for ELF (code=0) skip trigger
+                trig_fw_key = ""
+                if trig_ch_code != 0:
+                    for k, v in VARIABLE_CODES.items():
+                        if v == trig_ch_code and k != "None":
+                            trig_fw_key = k.lower()
+                            break
+                trig_display = VARIABLE_NAMES.get(trig_ch_code, f"Ch{trig_ch_idx+1}")
+                if trig_fw_key:
+                    self._set_status(f"Waiting for trigger on Ch{trig_ch_idx+1} ({trig_display}) "
                                      f"{'rising' if trig_rising else 'falling'} @ {trig_level:.3g}…")
                     prev_val = None
                     deadline = time.monotonic() + 30.0  # 30s trigger timeout
                     while time.monotonic() < deadline:
                         try:
-                            with self.serial_manager._lock:
-                                ser = self.serial_manager._ser
-                                ser.write(f"#g {trig_var_name.ljust(6)} ;\n".encode("ascii"))
-                                ser.readline()  # prompt
-                                resp = ser.readline().decode("ascii", errors="ignore").strip()
+                            resp = self.serial_manager.send(f"g {trig_fw_key}", expect_response=True)
                             cur_val = float(resp.replace('+', '').replace(' ', ''))
                             if prev_val is not None:
                                 crossed = (trig_rising and prev_val < trig_level <= cur_val) or \
@@ -3549,22 +3810,29 @@ QDialog QLineEdit#sc_combo {{
                             prev_val = cur_val
                         except Exception as _e:
                             logging.debug("SCOPE trigger poll failed: %s", _e)
-                        time.sleep(0.01)
+                        time.sleep(0.05)
                     else:
                         self._set_status("Trigger timeout: no crossing detected within 30 s")
                         self._sig_update_buttons.emit()
                         return
+                else:
+                    logging.debug("SCOPE trigger: no firmware poll key for ch%d (code=%d), skipping wait",
+                                  trig_ch_idx, trig_ch_code)
 
+            # Phase 1 — arm: short lock window (arm command + echo wait only)
             with self.serial_manager._lock:
                 ser = self.serial_manager._ser
-
                 self._set_status("Arming recording...")
                 ser.write(f"#s recptr {dec_encode(0.0)};\n".encode("ascii"))
                 time.sleep(0.02)
 
-                self._set_status(f"Recording {rec_time_s*1000:.1f} ms...")
-                time.sleep(rec_time_s + 0.05)
+            # Phase 2 — wait: lock released so other loops keep running
+            self._set_status(f"Recording {rec_time_s*1000:.1f} ms...")
+            time.sleep(rec_time_s + 0.05)
 
+            # Phase 3 — read: re-acquire lock to drain the buffer
+            with self.serial_manager._lock:
+                ser = self.serial_manager._ser
                 self._set_status(f"Reading {expected_bytes} bytes...")
                 ser.reset_input_buffer()
                 ser.write(b"#g recbuf ;\n")
@@ -3661,11 +3929,18 @@ QDialog QLineEdit#sc_combo {{
 
                 try:
                     t_frame_start = time.time()
+                    # Phase 1 — arm (short lock window)
                     with self.serial_manager._lock:
                         ser = self.serial_manager._ser
                         ser.write(f"#s recptr {dec_encode(0.0)};\n".encode("ascii"))
                         time.sleep(0.02)
-                        time.sleep(rec_time_s + 0.05)
+
+                    # Phase 2 — wait (no lock, other loops keep running)
+                    time.sleep(rec_time_s + 0.05)
+
+                    # Phase 3 — read (re-acquire lock to drain buffer)
+                    with self.serial_manager._lock:
+                        ser = self.serial_manager._ser
                         ser.reset_input_buffer()
                         ser.write(b"#g recbuf ;\n")
                         logging.info("SCOPE: Sent #g recbuf ; (expecting %d bytes)", expected_bytes)
@@ -3749,13 +4024,23 @@ QDialog QLineEdit#sc_combo {{
         self.ax.grid(True, color=grid_color, linewidth=0.8, alpha=0.9, linestyle='--')
 
         self._scroll_lines = {}
+        ch_names_sc = getattr(self, '_scroll_ch_names', ['None'] * 4)
+        def _scroll_ch_active(ci):
+            if ch_codes[ci] > 0:
+                return True
+            info = _ELF_SYMBOL_INFO.get(ch_names_sc[ci])
+            return info is not None and info[0] >= 0x20000000
         for ch_idx in range(4):
-            if ch_codes[ch_idx] > 0:
-                var_name = VARIABLE_NAMES[ch_codes[ch_idx]]
+            if _scroll_ch_active(ch_idx):
+                if ch_codes[ch_idx] > 0:
+                    var_name = VARIABLE_NAMES[ch_codes[ch_idx]]
+                else:
+                    var_name = ch_names_sc[ch_idx] or f"Ch{ch_idx+1}"
                 line, = self.ax.plot(time_axis, zeros,
                                      label=var_name,
                                      color=CHANNEL_COLORS[ch_idx],
                                      linewidth=1.4,
+                                     drawstyle=self._drawstyle,
                                      animated=True)
                 self._scroll_lines[ch_idx] = line
 
@@ -3773,38 +4058,33 @@ QDialog QLineEdit#sc_combo {{
         self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
         logging.debug("SCOPE _scroll_setup_axes: built with ring_size=%d", ring_size)
 
-    def _scroll_poll_half(self):
-        """QTimer slot — called every 5 ms on the main thread.
-        Tries to acquire serial lock non-blocking; if busy, reschedules automatically
-        (QTimer fires again in 5 ms). When rechalf==1 spawns a background thread to
-        read the buffer without blocking the UI."""
-        if not self._scroll_running:
-            if self._scroll_poll_timer is not None:
-                self._scroll_poll_timer.stop()
-            return
-
-        if not self.serial_manager._lock.acquire(blocking=False):
-            return   # busy — QTimer will try again in 5 ms
-
-        try:
-            ser = self.serial_manager._ser
-            ser.write(b"#g rechalf;\n")
+    def _scroll_half_poll_loop(self):
+        """Daemon thread: polls rechalf every 5 ms without touching the Qt main thread.
+        When rechalf==1, calls _scroll_read_buffer inline (same thread) so the read
+        happens entirely off the event loop."""
+        while not self._scroll_half_stop.is_set() and self._scroll_running:
             try:
-                ser.readline()   # discard "->" prompt
-                resp = ser.readline().decode("ascii", errors="ignore").strip()
-                half = int(float(resp))
-            except Exception:
-                half = 0
-        except Exception:
-            half = 0
-        finally:
-            self.serial_manager._lock.release()
+                if not self.serial_manager._lock.acquire(blocking=False):
+                    self._scroll_half_stop.wait(0.005)
+                    continue
+                try:
+                    ser = self.serial_manager._ser
+                    ser.write(b"#g rechalf;\n")
+                    try:
+                        ser.readline()   # discard "->" prompt
+                        resp = ser.readline().decode("ascii", errors="ignore").strip()
+                        half = int(float(resp))
+                    except Exception:
+                        half = 0
+                finally:
+                    self.serial_manager._lock.release()
 
-        if half == 1:
-            # Stop poll timer while the background read is in progress
-            if self._scroll_poll_timer is not None:
-                self._scroll_poll_timer.stop()
-            threading.Thread(target=self._scroll_read_buffer, daemon=True).start()
+                if half == 1:
+                    self._scroll_read_buffer()
+                else:
+                    self._scroll_half_stop.wait(0.005)
+            except Exception:
+                self._scroll_half_stop.wait(0.005)
 
     def _scroll_read_buffer(self):
         """Background thread: read binary buffer, clear rechalf, push to ring deques.
@@ -3866,15 +4146,6 @@ QDialog QLineEdit#sc_combo {{
 
         except Exception:
             logging.exception("Scroll read buffer failed")
-        finally:
-            # Restart poll timer from main thread
-            if self._scroll_running:
-                QTimer.singleShot(0, self._restart_scroll_poll)
-
-    def _restart_scroll_poll(self):
-        """Restart the poll timer after a buffer read cycle."""
-        if self._scroll_running and self._scroll_poll_timer is not None:
-            self._scroll_poll_timer.start(5)
 
     def _scroll_display_tick(self):
         """Called every 20 ms by QTimer. Blits updated line data."""
@@ -3902,9 +4173,14 @@ QDialog QLineEdit#sc_combo {{
                 ring_size = len(snapshots[0]) if snapshots else 1
                 time_axis = np.linspace(-t_display, 0.0, ring_size)
 
-            # Auto-scale Y across all active channels
+            # Auto-scale Y across all active channels (code>0 OR ELF address channel)
+            ch_names_sc = self.last_config.get('ch_names', ['None']*4)
+            def _sc_active(i):
+                if ch_codes[i] > 0: return True
+                info = _ELF_SYMBOL_INFO.get(ch_names_sc[i])
+                return info is not None and info[0] >= 0x20000000
             all_vals = np.concatenate([snapshots[i] for i in range(4)
-                                       if ch_codes[i] > 0 and len(snapshots[i])])
+                                       if _sc_active(i) and len(snapshots[i])])
             valid = all_vals[np.isfinite(all_vals)]
             if len(valid) > 0:
                 ymin, ymax = float(valid.min()), float(valid.max())
@@ -3924,8 +4200,6 @@ QDialog QLineEdit#sc_combo {{
                 line.set_ydata(snapshots[ch_idx])
                 self.ax.draw_artist(line)
             self.canvas.blit(self.ax.bbox)
-
-            self._scroll_frame_count += 1
 
         except Exception as e:
             logging.debug("SCOPE _scroll_display_tick error: %s", e)
@@ -3970,6 +4244,8 @@ QDialog QLineEdit#sc_combo {{
         grid_color = "#3A3A5C" if dark else "#E8EAF0"
 
         self.ax.cla()
+        self._trigger_line = None   # ax.cla() destroys all artists
+        self._hint_ax_text = None   # ax.cla() destroys all artists
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
 
@@ -3989,7 +4265,9 @@ QDialog QLineEdit#sc_combo {{
             scale_suffix = f" ×{int(factor)}" if factor != 1.0 else ""
             label = (f"{var_name} [{unit}]{scale_suffix}" if unit else f"{var_name}{scale_suffix}")
             line, = self.ax.plot(t_axis, plot_samples, color=CHANNEL_COLORS[i], linewidth=1.4,
-                                 label=label, zorder=2, picker=5)
+                                 label=label, zorder=2, picker=5, drawstyle=self._drawstyle)
+            if i in self._ch_hidden:
+                line.set_visible(False)
             self._plotted_lines[i] = line
             any_plotted = True
             # Update live labels (show scaled value)
@@ -4046,11 +4324,24 @@ QDialog QLineEdit#sc_combo {{
         self.ax.grid(True, which='major', color=grid_color, linewidth=0.8, alpha=0.9, linestyle='--')
         self.ax.minorticks_on()
         self.ax.grid(True, which='minor', color=grid_color, linewidth=0.3, alpha=0.4, linestyle=':')
+        # Use plain engineering notation (e.g. 1e-3) instead of ×10⁻³ superscript
+        from matplotlib.ticker import ScalarFormatter
+        for axis in (self.ax.xaxis, self.ax.yaxis):
+            fmt = ScalarFormatter(useOffset=False, useMathText=False)
+            fmt.set_scientific(True)
+            fmt.set_powerlimits((-3, 4))
+            axis.set_major_formatter(fmt)
+            axis.get_offset_text().set_color(p['muted'])
+            axis.get_offset_text().set_fontsize(8)
         self._crosshair_v = None
         self._blit_bg = None
         self._clear_ab_lines()
         if self._ylim_locked is not None:
             self.ax.set_ylim(self._ylim_locked)
+        self._has_plot_data = True  # set before _update_trigger_line check
+        self._update_trigger_line()
+        self._hint_ax_text = None   # ax.cla() destroyed any previous hint artist
+        self._ensure_hint_text()
         try:
             self.fig.tight_layout(pad=0.2)
         except Exception:
@@ -4060,9 +4351,9 @@ QDialog QLineEdit#sc_combo {{
         self._data_xlim = tuple(self.ax.get_xlim())
         self._data_ylim = tuple(self.ax.get_ylim())
 
-        self._has_plot_data = True
         self._last_plot_data = (ch_data, t_axis, cfg)
         self._btn_export.setEnabled(True)
+        self._btn_screenshot.setEnabled(True)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EXPORT
@@ -4072,53 +4363,72 @@ QDialog QLineEdit#sc_combo {{
         if self._last_plot_data is None:
             return
         ch_data, t_axis, cfg = self._last_plot_data
-        p = _get_palette()
 
         import datetime as _dt
         _default_name = _dt.datetime.now().strftime("amc_waveform_%Y%m%d_%H%M%S")
-        path, sel_filter = QFileDialog.getSaveFileName(
-            self, "Export Waveform", _default_name,
-            "CSV Data (*.csv);;PNG Image (*.png)"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Waveform as CSV", _default_name,
+            "CSV Data (*.csv)"
         )
         if not path:
             return
 
         try:
-            if sel_filter.startswith("PNG") or path.lower().endswith(".png"):
-                if not path.lower().endswith(".png"):
-                    path += ".png"
-                self.fig.savefig(path, dpi=150, bbox_inches='tight', facecolor=p['card'])
-                self._set_status(f"Saved PNG: {os.path.basename(path)}")
-            else:
-                if not path.lower().endswith(".csv"):
-                    path += ".csv"
-                import datetime as _dt2
-                ch_codes = cfg['ch_codes']
-                headers  = ["time_s"]
-                for i, samples in enumerate(ch_data):
-                    if samples:
-                        vname = VARIABLE_NAMES.get(ch_codes[i], f"Ch{i+1}")
-                        unit  = VARIABLE_UNITS.get(vname, "")
-                        col   = f"{vname}[{unit}]" if unit else vname
-                        headers.append(col)
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(f"# AMC Interface export\n")
-                    f.write(f"# Timestamp: {_dt2.datetime.now().isoformat()}\n")
-                    f.write(f"# Sample rate: {cfg.get('samplefreq', '?')} Hz\n")
-                    f.write(f"# Rec time: {cfg.get('rec_time_s', '?')} s\n")
-                    f.write(f"# Samples: {cfg.get('n_samples', '?')}\n")
-                    f.write(f"# Note: values are raw (unscaled) — display scale not applied\n")
-                    f.write(",".join(headers) + "\n")
-                    for j, t in enumerate(t_axis):
-                        row = [f"{t:.6g}"]
-                        for samples in ch_data:
-                            if samples:
-                                row.append(f"{samples[j]:.6g}" if j < len(samples) else "")
-                        f.write(",".join(row) + "\n")
-                self._set_status(f"CSV saved: {os.path.basename(path)}")
+            if not path.lower().endswith(".csv"):
+                path += ".csv"
+            ch_codes = cfg['ch_codes']
+            headers  = ["time_s"]
+            for i, samples in enumerate(ch_data):
+                if samples:
+                    vname = VARIABLE_NAMES.get(ch_codes[i], f"Ch{i+1}")
+                    unit  = VARIABLE_UNITS.get(vname, "")
+                    col   = f"{vname}[{unit}]" if unit else vname
+                    headers.append(col)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(f"# AMC Interface export\n")
+                f.write(f"# Timestamp: {_dt.datetime.now().isoformat()}\n")
+                f.write(f"# Sample rate: {cfg.get('samplefreq', '?')} Hz\n")
+                f.write(f"# Rec time: {cfg.get('rec_time_s', '?')} s\n")
+                f.write(f"# Samples: {cfg.get('n_samples', '?')}\n")
+                f.write(f"# Note: values are raw (unscaled) — display scale not applied\n")
+                f.write(",".join(headers) + "\n")
+                for j, t in enumerate(t_axis):
+                    row = [f"{t:.6g}"]
+                    for samples in ch_data:
+                        if samples:
+                            row.append(f"{samples[j]:.6g}" if j < len(samples) else "")
+                    f.write(",".join(row) + "\n")
+            self._set_status(f"CSV saved: {os.path.basename(path)}")
         except Exception as e:
             logging.exception("Export failed")
             self._set_status(f"Export error: {e}")
+
+    def _on_screenshot_clicked(self):
+        if self._last_plot_data is None:
+            self._set_status("Nothing to screenshot — capture first")
+            return
+        import datetime as _dt
+        p = _get_palette()
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"amc_scope_{ts}.png")
+        try:
+            self.fig.savefig(path, dpi=150, bbox_inches='tight', facecolor=p['card'])
+            self._set_status(f"Screenshot saved: {os.path.basename(path)}")
+        except Exception as e:
+            logging.exception("Screenshot failed")
+            self._set_status(f"Screenshot error: {e}")
+
+    def _on_drawstyle_toggled(self, checked):
+        self._drawstyle = "steps-post" if checked else "default"
+        QSettings("Appcon Technologies", "AMC Interface").setValue(
+            "scope/drawstyle", self._drawstyle)
+        _ds_icon = "fa5s.signal" if checked else "fa5s.chart-line"
+        self._btn_drawstyle.setIcon(qta.icon(_ds_icon, color="#7B9AB8"))
+        if self._last_plot_data is not None and not self._realtime_running:
+            ch_data, t_axis, cfg = self._last_plot_data
+            self._do_plot(ch_data, t_axis, cfg)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  CLOSE EVENT
@@ -4145,8 +4455,9 @@ QDialog QLineEdit#sc_combo {{
     def closeEvent(self, event):
         self._realtime_running = False
         self._scroll_running   = False
+        self._scroll_half_stop.set()
         self._save_session_config()
-        for t in (self._scroll_poll_timer, self._scroll_display_timer,
+        for t in (self._scroll_display_timer,
                   self._no_port_timer,
                   getattr(self, '_spinner_timer', None)):
             if t is not None:
