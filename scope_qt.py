@@ -366,21 +366,7 @@ def _get_palette():
         }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DECIMAL ENCODE  (verbatim from reference scope.py / SAL_AMCComm.c)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def dec_encode(value: float) -> str:
-    sign = '-' if value < 0 else '+'
-    absval = abs(value)
-    if absval > 999999999.0:
-        absval = 999999999.0
-    int_part = int(absval)
-    int_digits = max(1, len(str(int_part)))
-    frac_digits = max(0, 8 - int_digits) if int_digits < 9 else 0
-    result = sign + f"{absval:.{frac_digits}f}"
-    return result[:10].ljust(10)
-
+from protocol import dec_encode
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM COMBO — looks like QComboBox, popup has [−] per row
@@ -893,7 +879,16 @@ class ScopeWindow(QDialog):
     _sig_elf_scanning   = Signal()                         # folder scan started
     _sig_elf_reloaded   = Signal(int)                      # auto-reload after reflash
 
-    def __init__(self, parent, serial_manager, fpwm=16000.0):
+    @property
+    def fpwm(self):
+        """Safe fpwm: returns 16000.0 until firmware confirms the real value."""
+        return self._fpwm_raw if self._fpwm_raw else 16000.0
+
+    @fpwm.setter
+    def fpwm(self, value):
+        self._fpwm_raw = value
+
+    def __init__(self, parent, serial_manager, fpwm=None):
         super().__init__(parent)
         self.setObjectName("sc_dialog")
         self.setWindowTitle("Oscilloscope / Scope")
@@ -901,7 +896,7 @@ class ScopeWindow(QDialog):
         self.resize(680, 660)
 
         self.serial_manager = serial_manager
-        self.fpwm = fpwm
+        self._fpwm_raw = fpwm  # None until confirmed from firmware on connect
 
         self.is_configured        = False
         self.last_config          = None
@@ -1467,7 +1462,7 @@ class ScopeWindow(QDialog):
         _apply_mono(self._lbl_bytes)
         status_row.addWidget(self._lbl_bytes)
 
-        self._lbl_fpwm = QLabel(f"Fpwm: {self.fpwm:.0f} Hz" if self.fpwm > 0 else "Fpwm: —")
+        self._lbl_fpwm = QLabel(f"Fpwm: {self.fpwm:.0f} Hz" if self._fpwm_raw else "Fpwm: —")
         self._lbl_fpwm.setObjectName("sc_telemetry")
         _apply_mono(self._lbl_fpwm)
         status_row.addWidget(self._lbl_fpwm)
@@ -2361,6 +2356,10 @@ QDialog QLineEdit#sc_combo {{
 }}
 """
         self.setStyleSheet(qss)
+        # Also apply to _scope_body so dark mode works when embedded in combined view
+        # (when sc_body is reparented, the #sc_dialog ancestor selector no longer matches)
+        body_qss = qss.replace("#sc_dialog", "#sc_body")
+        self._scope_body.setStyleSheet(body_qss)
 
         # dark/light button icon and tooltip reflect current theme
         self._btn_dark.setIcon(_make_theme_icon(dark_mode=dark))
@@ -4451,6 +4450,15 @@ QDialog QLineEdit#sc_combo {{
         self._scope_body.show()
         self.show()
         self.raise_()
+
+    def update_fpwm(self, value: float):
+        """Called by main window after firmware confirms Fpwm on connect."""
+        self._fpwm_raw = value
+        self._lbl_fpwm.setText(f"Fpwm: {value:.0f} Hz")
+        self._spin_samplefreq.setRange(1.0, value)
+        # If current sample freq exceeds new fpwm, clamp it
+        if self._spin_samplefreq.value() > value:
+            self._spin_samplefreq.setValue(value)
 
     def closeEvent(self, event):
         self._realtime_running = False

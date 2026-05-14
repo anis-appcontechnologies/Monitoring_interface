@@ -37,24 +37,7 @@ except ImportError:
     _QTA = False
 
 
-def dec_encode(value: float) -> str:
-    sign = '-' if value < 0 else '+'
-    absval = abs(value)
-    if absval > 999999999.0:
-        absval = 999999999.0
-    int_part = int(absval)
-    int_digits = max(1, len(str(int_part)))
-    frac_digits = max(0, 8 - int_digits) if int_digits < 9 else 0
-    result = sign + f"{absval:.{frac_digits}f}"
-    return result[:10].ljust(10)
-
-
-def dec_decode(s: str) -> float:
-    s = s.strip()
-    if not s:
-        raise ValueError("Empty decimal string")
-    return float(s)
-
+from protocol import dec_encode, dec_decode
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 

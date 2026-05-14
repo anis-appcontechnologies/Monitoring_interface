@@ -4,3 +4,4 @@ numpy>=1.24
 matplotlib>=3.7
 pyelftools>=0.29
 QtAwesome>=1.2.3
+pytest>=7.0

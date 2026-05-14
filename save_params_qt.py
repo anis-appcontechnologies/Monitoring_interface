@@ -37,12 +37,7 @@ def _get_palette():
         }
 
 
-def dec_decode(s: str) -> float:
-    s = s.strip()
-    if not s:
-        raise ValueError("Empty response")
-    return float(s)
-
+from protocol import dec_decode
 
 PARAM_DEFS = [
     ("mpole",  "g mpole",  "Pole pairs",   "—",       1.0),

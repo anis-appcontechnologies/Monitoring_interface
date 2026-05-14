@@ -39,17 +39,7 @@ def _get_palette():
         }
 
 
-def dec_encode(value: float) -> str:
-    sign = '-' if value < 0 else '+'
-    absval = abs(value)
-    if absval > 999999999.0:
-        absval = 999999999.0
-    int_part = int(absval)
-    int_digits = max(1, len(str(int_part)))
-    frac_digits = max(0, 8 - int_digits) if int_digits < 9 else 0
-    result = sign + f"{absval:.{frac_digits}f}"
-    return result[:10].ljust(10)
-
+from protocol import dec_encode
 
 PARAM_DEFS = [
     ("mpole",  "s mpole",  "Pole pairs",   "—",       1.0),

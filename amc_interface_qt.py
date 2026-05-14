@@ -42,26 +42,7 @@ import shutil
 from html import escape
 from enum import Enum
 
-# ── Decimal encode/decode ─────────────────────────────────────────────────────
-def dec_encode(value: float) -> str:
-    sign = '-' if value < 0 else '+'
-    absval = abs(value)
-    if absval > 999999999.0:
-        absval = 999999999.0
-    int_part = int(absval)
-    int_digits = 1 if int_part == 0 else len(str(int_part))
-    frac_digits = 0 if int_digits >= 9 else 8 - int_digits
-    formatted = f"{absval:.{frac_digits}f}"
-    result = sign + formatted
-    return result.ljust(10)[:10]
-
-
-def dec_decode(s: str) -> float:
-    s = s.strip()
-    if not s:
-        raise ValueError("Empty decimal string")
-    return float(s)
-
+from protocol import dec_encode, dec_decode
 
 # ── Optional pyserial ─────────────────────────────────────────────────────────
 try:
@@ -602,6 +583,7 @@ QComboBox#baud_combo::down-arrow {{
 }}
 QLabel#baud_bps_lbl {{
     font-size: {fs(10)}px; color: {p['muted']}; background: transparent;
+    margin-left: 6px; margin-right: 10px;
 }}
 QComboBox#var_combo {{ padding-right: 22px; min-width: 60px; }}
 QComboBox#var_combo::drop-down {{ border: none; width: 20px; subcontrol-origin: padding; subcontrol-position: right center; }}
@@ -848,11 +830,16 @@ class SerialManager:
             cmd = f"#{parts[0]} {name}{rest};"
         if not cmd.endswith("\n"):
             cmd += "\n"
+        need_response = expect_response and cmd_parts and cmd_parts[0] == "g"
         try:
+            # Phase A — write under lock (microseconds; keeps _ser consistent)
             with self._lock:
                 self._ser.write(cmd.encode("ascii"))
                 logging.debug("Sent: %s", cmd.strip())
-                if expect_response and cmd_parts and cmd_parts[0] == "g":
+
+            # Phase B — read outside lock (may block up to serial timeout)
+            if need_response:
+                with self._lock:
                     prompt = self._ser.readline().decode("ascii", errors="ignore").strip()
                     if prompt != "->":
                         raise ValueError(f"Invalid prompt: expected '->', got '{prompt}'")
@@ -861,7 +848,7 @@ class SerialManager:
                     logging.debug("Received value: '%s'", resp)
                     return resp
             return ""
-        except (Exception,) as _e:
+        except Exception as _e:
             if serial and isinstance(_e, (serial.SerialException,
                                           getattr(serial, "SerialTimeoutException", type(None)))):
                 raise ConnectionError(f"Cable disconnected: {_e}") from _e
@@ -1378,12 +1365,16 @@ class AMCMainWindow(QMainWindow):
 
         _base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.abspath(".")
         for _icon_name in ("LogoAmcComm2.ico", "Logo-Appcon.ico", "LogoAmcComm2.png"):
-            _icon_path = os.path.join(_base, _icon_name)
-            if os.path.exists(_icon_path):
-                _qicon = QIcon(_icon_path)
-                self.setWindowIcon(_qicon)
-                QApplication.instance().setWindowIcon(_qicon)
-                break
+            for _sub in ("", "assets"):
+                _icon_path = os.path.join(_base, _sub, _icon_name)
+                if os.path.exists(_icon_path):
+                    _qicon = QIcon(_icon_path)
+                    self.setWindowIcon(_qicon)
+                    QApplication.instance().setWindowIcon(_qicon)
+                    break
+            else:
+                continue
+            break
 
         # Generate arrow PNGs now that QApplication exists, then rebuild QSS
         _make_arrow_png(C["muted"], _ARROW_MUTED)
@@ -1417,13 +1408,17 @@ class AMCMainWindow(QMainWindow):
 
         # Slider ↔ entry sync guard
         self._slider_updating = False
-        self.fpwm = 16000.0   # updated from firmware on each connect
+        self.fpwm = None   # None until firmware confirms value on connect
 
         # Cable-drop announcement guard — reset on each fresh connection
         self._cable_drop_announced = False
         self._user_disconnected    = False  # set True on manual disconnect, suppresses auto-connect
         self._has_connected_once   = False  # auto-connect only after user has connected manually first
         self._last_fault_state     = None   # tracks previous fault to suppress duplicate log entries
+        self._fault_log_last_t     = 0.0   # throttle: min 2 s between fault log entries
+        self._fault_flip_count     = 0     # counts ERR↔OK flips per session for garbled-baud detection
+        self._fault_flip_window_t  = 0.0   # start of current flip-counting window
+        self._baud_warn_shown      = False  # one-shot garbled-baud modal
         self._known_ports          = set()  # tracks port list for new-device detection
         _s = QSettings("Appcon Technologies", "AMC Interface")
         self._last_port = _s.value("last_port", None)
@@ -1618,8 +1613,15 @@ class AMCMainWindow(QMainWindow):
         lay.setSpacing(12)
 
         _base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.abspath(".")
-        logo_path = os.path.join(_base, "LogoAmcComm2.PNG")
-        if os.path.exists(logo_path):
+        logo_path = ""
+        for _sub in ("", "assets"):
+            _lp = os.path.join(_base, _sub, "LogoAmcComm2.PNG")
+            if not os.path.exists(_lp):
+                _lp = os.path.join(_base, _sub, "LogoAmcComm2.png")
+            if os.path.exists(_lp):
+                logo_path = _lp
+                break
+        if logo_path and os.path.exists(logo_path):
             pix = QPixmap(logo_path).scaledToHeight(58, Qt.TransformationMode.SmoothTransformation)
             logo_lbl = QLabel()
             logo_lbl.setPixmap(pix)
@@ -1730,7 +1732,7 @@ class AMCMainWindow(QMainWindow):
         bps_lbl.setObjectName("baud_bps_lbl")
 
         top_row.addWidget(self.baud_entry)
-        top_row.addSpacing(6)
+        top_row.addSpacing(14)
         top_row.addWidget(bps_lbl)
         top_row.addSpacing(8)
 
@@ -2381,6 +2383,7 @@ class AMCMainWindow(QMainWindow):
         self._cable_drop_announced = False
         self._user_disconnected    = False
         self._has_connected_once   = True
+        self._baud_warn_shown      = False
         self._last_port = port
         QSettings("Appcon Technologies", "AMC Interface").setValue("last_port", port)
         self._log_signal("INFO", f"Connected to {port} @ {baud} bps")
@@ -2396,6 +2399,15 @@ class AMCMainWindow(QMainWindow):
         self._start_get_loop()
         self._start_status_loop()
         self._start_cmd_loop()
+        # Push confirmed fpwm to any already-open scope window
+        if self.fpwm is not None:
+            self._log_signal("INFO", f"Firmware reports Fpwm = {self.fpwm:.0f} Hz")
+            scope = getattr(self, '_scope_window', None)
+            if scope is not None:
+                try:
+                    scope.update_fpwm(self.fpwm)
+                except RuntimeError:
+                    self._scope_window = None
 
     def _set_disconnected_ui(self):
         # Loops are stopped by _on_disconnect before this is called; stop again
@@ -2648,10 +2660,29 @@ class AMCMainWindow(QMainWindow):
         self._combined_prev_log_visible = self._log_panel.isVisible()
         self._log_panel.setVisible(False)
 
+        # Auto-maximize so the scope has room to breathe
+        if not self.isMaximized():
+            self.showMaximized()
+
         self._scope_embed_pane.setVisible(True)
-        total = self.width()
-        # Give main interface 40%, scope 60% (log is hidden so more room)
-        self._outer_splitter.setSizes([total * 4 // 10, total * 6 // 10])
+        # Connect splitter drag to persistence (once only)
+        if not getattr(self, '_combined_splitter_connected', False):
+            self._outer_splitter.splitterMoved.connect(self._save_combined_split_sizes)
+            self._combined_splitter_connected = True
+
+        # Restore persisted sizes, or default 35/65 with 720 px minimum for scope
+        _s = QSettings("Appcon Technologies", "AMC Interface")
+        saved = _s.value("combined_split_sizes", None)
+        if saved and len(saved) == 2:
+            try:
+                self._outer_splitter.setSizes([int(saved[0]), int(saved[1])])
+            except Exception:
+                saved = None
+        if not saved:
+            total = self.width() or 1400
+            scope_w = max(720, total * 65 // 100)
+            main_w  = total - scope_w
+            self._outer_splitter.setSizes([main_w, scope_w])
 
         self._combined_view_active = True
         self._combined_btn.setText("⊟  Separate View")
@@ -2687,6 +2718,11 @@ class AMCMainWindow(QMainWindow):
         self._combined_btn.setChecked(False)
         QSettings("Appcon Technologies", "AMC Interface").setValue("combined_view", False)
         self._show_toast("Scope window detached.", "info")
+
+    def _save_combined_split_sizes(self, *_):
+        if self._combined_view_active:
+            QSettings("Appcon Technologies", "AMC Interface").setValue(
+                "combined_split_sizes", self._outer_splitter.sizes())
 
     def _update_control_combo_style(self, mode):
         pass  # replaced by radio button checked states
@@ -2773,7 +2809,12 @@ class AMCMainWindow(QMainWindow):
         self.clear_button.setEnabled(True)
         if self._last_fault_state != fault_text:
             self._last_fault_state = fault_text
-            self._log_signal("ERR", f"Fault: {fault_text}")
+            now = time.monotonic()
+            if now - self._fault_log_last_t >= 2.0:
+                self._fault_log_last_t = now
+                self._log_signal("ERR", f"Fault: {fault_text}")
+            self._fault_flip_count += 1
+            self._check_garbled_baud()
 
     def _set_fault_ok(self):
         self.last_valid_fault = "No Fault"
@@ -2784,8 +2825,38 @@ class AMCMainWindow(QMainWindow):
         self.clear_button.setEnabled(False)
         self.clear_button.setVisible(False)
         if self._last_fault_state not in (None, "No Fault"):
-            self._log_signal("OK", "Fault cleared")
+            now = time.monotonic()
+            if now - self._fault_log_last_t >= 2.0:
+                self._fault_log_last_t = now
+                self._log_signal("OK", "Fault cleared")
+            self._fault_flip_count += 1
+            self._check_garbled_baud()
         self._last_fault_state = "No Fault"
+
+    def _check_garbled_baud(self):
+        """After 5 fault flips in 10 s, show a one-shot baud-mismatch warning."""
+        if self._baud_warn_shown:
+            return
+        now = time.monotonic()
+        if now - self._fault_flip_window_t > 10.0:
+            self._fault_flip_count = 1
+            self._fault_flip_window_t = now
+            return
+        if self._fault_flip_count >= 5:
+            self._baud_warn_shown = True
+            QTimer.singleShot(0, self._show_garbled_baud_modal)
+
+    def _show_garbled_baud_modal(self):
+        _ModernModal.warn(
+            self,
+            "Communication appears corrupted",
+            "The fault indicator is flickering rapidly, which usually means<br>"
+            "the <b>baud rate does not match the firmware</b>.<br><br>"
+            "Typical AMC firmware baud rate: <b>1 000 000 bps</b><br><br>"
+            "To fix: click <b>Disconnect</b>, correct the baud rate, "
+            "then reconnect.",
+            buttons=(("OK", MODAL_CONFIRMED),),
+        )
 
     def _sync_mode_radiobuttons(self, contr_text: str, sens_text: str):
         if time.time() < self._mode_lock_until:
@@ -3017,10 +3088,31 @@ class AMCMainWindow(QMainWindow):
         except Exception:
             self._show_toast("Invalid baud rate.", "error")
             return
-        _VALID_BAUDS = {9600, 19200, 38400, 57600, 115200, 230400,
-                        460800, 921600, 1000000, 1500000, 2000000}
-        if baud not in _VALID_BAUDS:
-            self._show_toast(f"Non-standard baud {baud} — verify hardware supports it", "warn")
+        _STANDARD_BAUDS = {9600, 19200, 38400, 57600, 115200, 230400,
+                           460800, 921600, 1000000, 1500000, 2000000}
+        if baud not in _STANDARD_BAUDS:
+            closest = min(_STANDARD_BAUDS, key=lambda b: abs(b - baud))
+            if abs(baud - closest) / closest > 0.01:
+                # Clearly non-standard — offer to correct it
+                reply = _ModernModal.warn(
+                    self,
+                    "Unusual baud rate",
+                    f"<b>{baud} bps</b> is not a standard serial rate.<br>"
+                    f"The nearest standard is <b>{closest} bps</b>.<br><br>"
+                    "Connecting at a wrong baud rate will result in garbled "
+                    "communication and repeated fault messages in the log.<br><br>"
+                    f"Use <b>{closest} bps</b> instead?",
+                    buttons=((f"Use {closest}", MODAL_CONFIRMED),
+                             ("Keep my value", MODAL_CANCELLED)),
+                )
+                if reply == MODAL_CONFIRMED:
+                    baud = closest
+                    self.baud_entry.setCurrentText(str(closest))
+            else:
+                self._show_toast(f"Non-standard baud {baud} — verify hardware supports it", "warn")
+        self._fault_flip_count    = 0
+        self._fault_flip_window_t = time.monotonic()
+        self._baud_warn_shown     = False
 
         # Always disconnect first to clear any stale serial state
         self.serial.disconnect()
@@ -3030,11 +3122,12 @@ class AMCMainWindow(QMainWindow):
                 self.serial.connect(port, baud)
                 try:
                     resp = self.serial.send("g fpwm", expect_response=True)
+                    logging.info("Fpwm raw response: %r", resp)
                     self.fpwm = dec_decode(resp)
                     logging.info("Fpwm = %.0f Hz", self.fpwm)
-                except Exception:
+                except (ValueError, ConnectionError, RuntimeError) as _fe:
                     self.fpwm = 16000.0
-                    logging.warning("Could not read Fpwm — using 16000 Hz default")
+                    logging.warning("Could not read Fpwm (%s) — using 16000 Hz default", _fe)
                 self._sig_connect.emit(port, str(baud))
             except Exception as e:
                 logging.exception("Failed to open serial port")

@@ -40,3 +40,16 @@ logs/
 
 # Compiled UI files
 *.ui.py
+
+# Generated/runtime artifacts
+amc_waveform_*.csv
+screenshots/
+debug_*.txt
+*.spec.bak
+
+# Build outputs
+AMC_Interface.exe
+dist/
+build/
+.pytest_cache/
+

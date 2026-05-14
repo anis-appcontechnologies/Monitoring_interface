@@ -1,0 +1,13 @@
+# AMC Drive Parameters
+mpole = 10
+mrs = 0.1065253
+mlsd = 0.0004303
+mlsq = 0.0004467
+mpsif = 0.0157974
+miqmx = 15
+msmax = 1200
+msmnl = 1200
+jres = 0.0015516
+fric = 0.0029254
+damp = 1
+dyn = 13.862
