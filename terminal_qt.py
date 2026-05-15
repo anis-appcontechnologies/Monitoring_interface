@@ -28,6 +28,16 @@ try:
 except ImportError:
     _QTA = False
 
+def _px(n: int) -> int:
+    try:
+        from PySide6.QtWidgets import QApplication
+        s = QApplication.primaryScreen()
+        if s is not None:
+            return max(1, round(n * s.logicalDotsPerInch() / 96.0))
+    except Exception:
+        pass
+    return n
+
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
@@ -56,8 +66,9 @@ class Terminal(QDialog):
         self.serial_manager = serial_manager
 
         self.setWindowTitle("AMC Terminal")
-        self.resize(640, 480)
-        self.setMinimumSize(540, 400)
+        _scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(_px(640), int(_scr.width() * 0.7)), min(_px(480), int(_scr.height() * 0.7)))
+        self.setMinimumSize(_px(540), _px(400))
 
         self._sig_log_response.connect(self._display_response)
         self._sig_reset_ui.connect(self._reset_ui_state)
@@ -99,7 +110,7 @@ class Terminal(QDialog):
         self.send_btn = QPushButton("Send")
         self.send_btn.setObjectName("term_btn_primary")
         self.send_btn.setToolTip("Send command to device (Enter also works)")
-        self.send_btn.setFixedWidth(80)
+        self.send_btn.setFixedWidth(_px(80))
         self.send_btn.clicked.connect(self.on_send)
         if _QTA:
             self.send_btn.setIcon(qta.icon("fa5s.paper-plane", color="#FFFFFF"))
@@ -123,7 +134,7 @@ class Terminal(QDialog):
 
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("term_btn_outline")
-        self.clear_btn.setFixedWidth(72)
+        self.clear_btn.setFixedWidth(_px(72))
         self.clear_btn.clicked.connect(self.clear_log)
         if _QTA:
             self.clear_btn.setIcon(qta.icon("fa5s.trash-alt", color="#6b7280"))
@@ -132,7 +143,7 @@ class Terminal(QDialog):
 
         self.copy_btn = QPushButton("Copy")
         self.copy_btn.setObjectName("term_btn_outline")
-        self.copy_btn.setFixedWidth(72)
+        self.copy_btn.setFixedWidth(_px(72))
         self.copy_btn.clicked.connect(self.copy_log)
         if _QTA:
             self.copy_btn.setIcon(qta.icon("fa5s.copy", color="#6b7280"))
@@ -160,55 +171,55 @@ class Terminal(QDialog):
         self.setStyleSheet(f"""
             QDialog {{ background: {p['bg']}; }}
             QLabel {{ background: transparent; color: {p['text']}; }}
-            QLabel#term_title {{ font-size: 16px; font-weight: 700; color: {p['text']}; }}
-            QLabel#term_sub   {{ font-size: 11px; color: {p['muted']}; }}
-            QLabel#term_field {{ font-size: 11px; font-weight: 600; color: {p['text2']}; }}
-            QLabel#term_status_ok  {{ font-size: 11px; font-weight: 700; color: #2E6B2A; }}
-            QLabel#term_status_busy{{ font-size: 11px; font-weight: 700; color: {p['blue']}; }}
-            QLabel#term_status_err {{ font-size: 11px; font-weight: 700; color: {p['red']}; }}
+            QLabel#term_title {{ font-size: {_px(16)}px; font-weight: 700; color: {p['text']}; }}
+            QLabel#term_sub   {{ font-size: {_px(11)}px; color: {p['muted']}; }}
+            QLabel#term_field {{ font-size: {_px(11)}px; font-weight: 600; color: {p['text2']}; }}
+            QLabel#term_status_ok  {{ font-size: {_px(11)}px; font-weight: 700; color: #2E6B2A; }}
+            QLabel#term_status_busy{{ font-size: {_px(11)}px; font-weight: 700; color: {p['blue']}; }}
+            QLabel#term_status_err {{ font-size: {_px(11)}px; font-weight: 700; color: {p['red']}; }}
             QFrame#term_card {{
-                background: {p['white']}; border: 1px solid {p['border']}; border-radius: 8px;
+                background: {p['white']}; border: 1px solid {p['border']}; border-radius: {_px(8)}px;
             }}
             QLineEdit {{
                 background: {p['white']}; color: {p['text']};
-                border: 1px solid {p['border']}; border-radius: 5px;
-                padding: 4px 8px; font-size: 12px;
+                border: 1px solid {p['border']}; border-radius: {_px(5)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(12)}px;
                 font-family: "Consolas", "Courier New", monospace;
-                min-height: 22px;
+                min-height: {_px(22)}px;
                 selection-background-color: {p['red']};
             }}
             QLineEdit:focus {{ border-color: {p['red']}; }}
             QPushButton#term_btn_primary {{
                 background: {p['red']}; color: white; border: none;
-                border-radius: 5px; padding: 6px 12px;
-                font-size: 12px; font-weight: 700;
+                border-radius: {_px(5)}px; padding: {_px(6)}px {_px(12)}px;
+                font-size: {_px(12)}px; font-weight: 700;
             }}
             QPushButton#term_btn_primary:hover    {{ background: {p.get('red_dark', '#9B1F24')}; }}
             QPushButton#term_btn_primary:disabled {{ background: {p['faint']}; color: #EEEEEE; }}
             QPushButton#term_btn_outline {{
                 background: {p['white']}; color: {p['text2']};
-                border: 1.5px solid {p['border']}; border-radius: 5px;
-                font-size: 11px; padding: 4px 8px;
+                border: 1.5px solid {p['border']}; border-radius: {_px(5)}px;
+                font-size: {_px(11)}px; padding: {_px(4)}px {_px(8)}px;
             }}
             QPushButton#term_btn_outline:hover {{
                 border-color: {p['red']}; color: {p['red']}; background: {p['red_bg']};
             }}
             QTextEdit#term_log {{
                 background: #1A1A1A; color: #E8E8E8;
-                border: 1px solid #2A2A2A; border-radius: 6px;
+                border: 1px solid #2A2A2A; border-radius: {_px(6)}px;
                 font-family: "Consolas", "Courier New", monospace;
-                font-size: 12px; padding: 8px;
+                font-size: {_px(12)}px; padding: {_px(8)}px;
             }}
             QTextEdit#term_log QScrollBar:vertical {{
-                background: #1A1A1A; width: 8px; border-radius: 4px;
+                background: #1A1A1A; width: {_px(8)}px; border-radius: {_px(4)}px;
             }}
             QTextEdit#term_log QScrollBar::handle:vertical {{
-                background: #4A4A4A; border-radius: 4px; min-height: 24px;
+                background: #4A4A4A; border-radius: {_px(4)}px; min-height: {_px(24)}px;
             }}
             QToolTip {{
                 background: #1E293B; color: #F1F5F9;
-                border: 1px solid #334155; border-radius: 4px;
-                padding: 4px 8px; font-size: 11px;
+                border: 1px solid #334155; border-radius: {_px(4)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(11)}px;
             }}
         """)
 

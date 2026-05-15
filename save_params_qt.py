@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFrame, QSizePolicy, QFileDialog, QApplication,
+    QPushButton, QFrame, QSizePolicy, QFileDialog, QApplication, QCheckBox,
 )
 
 try:
@@ -36,6 +36,16 @@ def _get_palette():
             "input_bg": "#F7F7F7", "faint": "#B0B0B0",
         }
 
+
+def _px(n: int) -> int:
+    try:
+        from PySide6.QtWidgets import QApplication
+        s = QApplication.primaryScreen()
+        if s is not None:
+            return max(1, round(n * s.logicalDotsPerInch() / 96.0))
+    except Exception:
+        pass
+    return n
 
 from protocol import dec_decode
 
@@ -64,8 +74,9 @@ class SaveParameters(QDialog):
         super().__init__(parent)
         self.serial_manager = serial_manager
         self.setWindowTitle("Save Parameters")
-        self.resize(520, 480)
-        self.setMinimumSize(460, 400)
+        _scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(_px(520), int(_scr.width() * 0.6)), min(_px(480), int(_scr.height() * 0.7)))
+        self.setMinimumSize(_px(460), _px(400))
 
         self._sig_done.connect(self._on_done)
         self._sig_error.connect(self._on_error)
@@ -96,7 +107,7 @@ class SaveParameters(QDialog):
 
         path_lbl = QLabel("File Path")
         path_lbl.setObjectName("sp_field")
-        path_lbl.setFixedWidth(64)
+        path_lbl.setFixedWidth(_px(64))
         path_lay.addWidget(path_lbl)
 
         self.path_entry = QLineEdit()
@@ -105,7 +116,7 @@ class SaveParameters(QDialog):
 
         browse_btn = QPushButton("Browse")
         browse_btn.setObjectName("sp_btn_outline")
-        browse_btn.setFixedWidth(80)
+        browse_btn.setFixedWidth(_px(80))
         browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         browse_btn.clicked.connect(self._browse)
         path_lay.addWidget(browse_btn)
@@ -121,6 +132,10 @@ class SaveParameters(QDialog):
             self.save_btn.setIcon(qta.icon("fa5s.save", color="#FFFFFF"))
             self.save_btn.setIconSize(QSize(13, 13))
         root.addWidget(self.save_btn)
+
+        self._chk_save_to_ctrl = QCheckBox("Also save to controller memory (s smpar)")
+        self._chk_save_to_ctrl.setChecked(True)
+        root.addWidget(self._chk_save_to_ctrl)
 
         # Status
         self.status_lbl = QLabel("")
@@ -168,39 +183,39 @@ class SaveParameters(QDialog):
         self.setStyleSheet(f"""
             QDialog {{ background: {p['bg']}; }}
             QLabel  {{ background: transparent; color: {p['text']}; }}
-            QLabel#sp_title  {{ font-size: 15px; font-weight: 700; color: {p['text']}; }}
-            QLabel#sp_sub    {{ font-size: 11px; color: {p['muted']}; }}
-            QLabel#sp_field  {{ font-size: 11px; font-weight: 600; color: {p['text2']}; }}
-            QLabel#sp_result {{ font-size: 11px; color: {p['text2']}; font-family: Consolas, monospace; }}
-            QLabel#sp_status_ok  {{ font-size: 11px; font-weight: 600; color: {p['blue']}; }}
-            QLabel#sp_status_err {{ font-size: 11px; font-weight: 600; color: {p['red']}; }}
-            QFrame#sp_card   {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: 8px; }}
+            QLabel#sp_title  {{ font-size: {_px(15)}px; font-weight: 700; color: {p['text']}; }}
+            QLabel#sp_sub    {{ font-size: {_px(11)}px; color: {p['muted']}; }}
+            QLabel#sp_field  {{ font-size: {_px(11)}px; font-weight: 600; color: {p['text2']}; }}
+            QLabel#sp_result {{ font-size: {_px(11)}px; color: {p['text2']}; font-family: Consolas, monospace; }}
+            QLabel#sp_status_ok  {{ font-size: {_px(11)}px; font-weight: 600; color: {p['blue']}; }}
+            QLabel#sp_status_err {{ font-size: {_px(11)}px; font-weight: 600; color: {p['red']}; }}
+            QFrame#sp_card   {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: {_px(8)}px; }}
             QFrame#sp_sep    {{ background: {p['border']}; max-height: 1px; border: none; }}
             QFrame#sp_grid   {{ background: transparent; }}
             QLineEdit {{
                 background: {p['white']}; color: {p['text']};
-                border: 1px solid {p['border']}; border-radius: 5px;
-                padding: 4px 8px; font-size: 11px; min-height: 22px;
+                border: 1px solid {p['border']}; border-radius: {_px(5)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(11)}px; min-height: {_px(22)}px;
             }}
             QLineEdit:focus {{ border-color: {p['red']}; }}
             QPushButton#sp_btn_primary {{
                 background: {p['red']}; color: white; border: none;
-                border-radius: 5px; padding: 7px 16px;
-                font-size: 12px; font-weight: 700;
+                border-radius: {_px(5)}px; padding: {_px(7)}px {_px(16)}px;
+                font-size: {_px(12)}px; font-weight: 700;
                 border-bottom: 2px solid {p.get('red_dark', '#9B1F24')};
             }}
             QPushButton#sp_btn_primary:hover    {{ background: {p.get('red_dark', '#9B1F24')}; }}
             QPushButton#sp_btn_primary:disabled {{ background: {p['faint']}; color: #EEEEEE; border-bottom: none; }}
             QPushButton#sp_btn_outline {{
                 background: {p['white']}; color: {p['text2']};
-                border: 1.5px solid {p['border']}; border-radius: 5px;
-                font-size: 11px; padding: 4px 8px;
+                border: 1.5px solid {p['border']}; border-radius: {_px(5)}px;
+                font-size: {_px(11)}px; padding: {_px(4)}px {_px(8)}px;
             }}
             QPushButton#sp_btn_outline:hover {{ border-color: {p['red']}; color: {p['red']}; }}
             QToolTip {{
                 background: #1E293B; color: #F1F5F9;
-                border: 1px solid #334155; border-radius: 4px;
-                padding: 4px 8px; font-size: 11px;
+                border: 1px solid #334155; border-radius: {_px(4)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(11)}px;
             }}
         """)
 
@@ -223,6 +238,7 @@ class SaveParameters(QDialog):
         self.save_btn.setEnabled(False)
         self.save_btn.setText("Saving…")
         self._on_status("Reading parameters from firmware…")
+        save_to_ctrl = self._chk_save_to_ctrl.isChecked()
 
         def worker():
             try:
@@ -240,6 +256,14 @@ class SaveParameters(QDialog):
                     f.writelines(lines)
 
                 logging.info("Parameters saved to %s", file_path)
+
+                if save_to_ctrl:
+                    try:
+                        self.serial_manager.send("s smpar", expect_response=False)
+                        logging.info("s smpar sent — parameters written to controller NV memory")
+                    except Exception as _se:
+                        logging.warning("s smpar failed: %s", _se)
+
                 self._sig_done.emit(results)
             except Exception as e:
                 logging.exception("Save failed")

@@ -39,6 +39,16 @@ except ImportError:
 
 from protocol import dec_encode, dec_decode
 
+def _px(n: int) -> int:
+    try:
+        from PySide6.QtWidgets import QApplication
+        s = QApplication.primaryScreen()
+        if s is not None:
+            return max(1, round(n * s.logicalDotsPerInch() / 96.0))
+    except Exception:
+        pass
+    return n
+
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
@@ -97,26 +107,26 @@ def _modal(parent, title: str, msg: str, icon_name: str, icon_color: str):
         lay.addWidget(ico)
     ttl = QLabel(title)
     ttl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    ttl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {p['text']}; background: transparent;")
+    ttl.setStyleSheet(f"font-size: {_px(14)}px; font-weight: 700; color: {p['text']}; background: transparent;")
     lay.addWidget(ttl)
     body = QLabel(msg)
     body.setWordWrap(True)
     body.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    body.setStyleSheet(f"font-size: 12px; color: {p['text2']}; background: transparent;")
+    body.setStyleSheet(f"font-size: {_px(12)}px; color: {p['text2']}; background: transparent;")
     lay.addWidget(body)
     btn_row = QHBoxLayout()
     btn_row.addStretch()
     ok_btn = QPushButton("OK")
     ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     ok_btn.setStyleSheet(
-        f"QPushButton {{ background: {p['blue']}; color: white; border: none; border-radius: 5px; "
-        "padding: 7px 24px; font-size: 12px; font-weight: 700; }"
+        f"QPushButton {{ background: {p['blue']}; color: white; border: none; border-radius: {_px(5)}px; "
+        f"padding: {_px(7)}px {_px(24)}px; font-size: {_px(12)}px; font-weight: 700; }}"
         f"QPushButton:hover {{ background: {p['blue_dark']}; }}")
     ok_btn.clicked.connect(dlg.accept)
     btn_row.addWidget(ok_btn)
     lay.addLayout(btn_row)
     outer.addWidget(card)
-    dlg.setMinimumWidth(340)
+    dlg.setMinimumWidth(_px(340))
     dlg.exec()
 
 
@@ -152,8 +162,9 @@ class InertiaIdentification(QDialog):
 
         self.setWindowTitle("Mechanical Parameters")
         self.setObjectName("ip_dialog")
-        self.resize(820, 520)
-        self.setMinimumSize(760, 480)
+        _scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(_px(820), int(_scr.width() * 0.9)), min(_px(520), int(_scr.height() * 0.85)))
+        self.setMinimumSize(_px(760), _px(480))
 
         self._stop_ident = False
 
@@ -210,7 +221,7 @@ class InertiaIdentification(QDialog):
 
         self.accel_ratio_entry = self._mk_entry()
         self.accel_ratio_entry.setText("25")
-        self.accel_ratio_entry.setFixedWidth(80)
+        self.accel_ratio_entry.setFixedWidth(_px(80))
         accel_row.addWidget(self.accel_ratio_entry)
         accel_row.addWidget(self._unit_lbl("%"))
         accel_row.addStretch()
@@ -223,7 +234,7 @@ class InertiaIdentification(QDialog):
         self.start_btn.setObjectName("ip_btn_primary")
         self.start_btn.setToolTip("Trigger inertia identification (jidn). "
                                   "Motor must be stopped and sensorless mode active.")
-        self.start_btn.setMinimumHeight(34)
+        self.start_btn.setMinimumHeight(_px(34))
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_btn.clicked.connect(self.on_start_identification)
         if _QTA:
@@ -234,7 +245,7 @@ class InertiaIdentification(QDialog):
         self.stop_ident_btn = QPushButton("Stop")
         self.stop_ident_btn.setObjectName("ip_btn_secondary")
         self.stop_ident_btn.setToolTip("Abort running identification")
-        self.stop_ident_btn.setMinimumHeight(34)
+        self.stop_ident_btn.setMinimumHeight(_px(34))
         self.stop_ident_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_ident_btn.setEnabled(False)
         self.stop_ident_btn.clicked.connect(self._on_stop_ident_clicked)
@@ -299,7 +310,7 @@ class InertiaIdentification(QDialog):
         self.calc_btn.setObjectName("ip_btn_secondary")
         self.calc_btn.setToolTip("Compute Kp/Ki from identified or custom inertia.\n"
                                  "Leave J empty to read from firmware, or enter custom value.")
-        self.calc_btn.setMinimumHeight(34)
+        self.calc_btn.setMinimumHeight(_px(34))
         self.calc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.calc_btn.clicked.connect(self.on_calculate_speed_pi)
         if _QTA:
@@ -311,7 +322,7 @@ class InertiaIdentification(QDialog):
         self.apply_btn.setObjectName("ip_btn_primary")
         self.apply_btn.setToolTip("Apply calculated Kp/Ki to the active speed PI controller.")
         self.apply_btn.setEnabled(False)
-        self.apply_btn.setMinimumHeight(34)
+        self.apply_btn.setMinimumHeight(_px(34))
         self.apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.apply_btn.clicked.connect(self.on_apply_speed_pi)
         if _QTA:
@@ -348,7 +359,7 @@ class InertiaIdentification(QDialog):
         inertia_row.setSpacing(6)
         inertia_name = QLabel("Inertia J")
         inertia_name.setObjectName("ip_res_name")
-        inertia_name.setFixedWidth(120)
+        inertia_name.setFixedWidth(_px(120))
         inertia_name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.inertia_label = QLabel("—")
         self.inertia_label.setObjectName("ip_res_val")
@@ -361,7 +372,7 @@ class InertiaIdentification(QDialog):
         friction_row.setSpacing(6)
         friction_name = QLabel("Friction coeff B")
         friction_name.setObjectName("ip_res_name")
-        friction_name.setFixedWidth(120)
+        friction_name.setFixedWidth(_px(120))
         friction_name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.friction_label = QLabel("—")
         self.friction_label.setObjectName("ip_res_val")
@@ -428,7 +439,7 @@ class InertiaIdentification(QDialog):
     def _mk_entry(self) -> QLineEdit:
         e = QLineEdit()
         e.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        e.setMinimumWidth(110)
+        e.setMinimumWidth(_px(110))
         v = QDoubleValidator()
         v.setNotation(QDoubleValidator.Notation.StandardNotation)
         e.setValidator(v)
@@ -449,7 +460,7 @@ class InertiaIdentification(QDialog):
         grid.addWidget(entry, row, 1)
         u = QLabel(unit)
         u.setObjectName("ip_unit")
-        u.setMinimumWidth(60)
+        u.setMinimumWidth(_px(60))
         grid.addWidget(u, row, 2, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def _wire_signals(self):
@@ -480,55 +491,55 @@ class InertiaIdentification(QDialog):
         self.setStyleSheet(f"""
             QDialog{d} {{ background: {p['bg']}; }}
             {d} QLabel {{ background: transparent; color: {p['text']}; }}
-            {d} QLabel#ip_title      {{ font-size: 16px; font-weight: 700; color: {p['text']}; }}
-            {d} QLabel#ip_sub        {{ font-size: 11px; color: {p['muted']}; }}
-            {d} QLabel#ip_card_title {{ font-size: 13px; font-weight: 700; color: {p['text']}; }}
-            {d} QLabel#ip_subcard_title {{ font-size: 11px; font-weight: 700; color: {p['text2']}; }}
-            {d} QLabel#ip_field      {{ font-size: 11px; font-weight: 500; color: {p['text2']}; }}
-            {d} QLabel#ip_unit       {{ font-size: 11px; color: {p['muted']}; }}
-            {d} QLabel#ip_info       {{ font-size: 10px; color: {p['muted']}; }}
-            {d} QLabel#ip_status     {{ font-size: 11px; font-weight: 600; color: {p['text2']}; }}
-            {d} QLabel#ip_res_name   {{ font-size: 11px; color: {p['muted']}; font-weight: 500; }}
-            {d} QLabel#ip_res_val    {{ font-size: 13px; font-weight: 700; color: {p['text']};
+            {d} QLabel#ip_title      {{ font-size: {_px(16)}px; font-weight: 700; color: {p['text']}; }}
+            {d} QLabel#ip_sub        {{ font-size: {_px(11)}px; color: {p['muted']}; }}
+            {d} QLabel#ip_card_title {{ font-size: {_px(13)}px; font-weight: 700; color: {p['text']}; }}
+            {d} QLabel#ip_subcard_title {{ font-size: {_px(11)}px; font-weight: 700; color: {p['text2']}; }}
+            {d} QLabel#ip_field      {{ font-size: {_px(11)}px; font-weight: 500; color: {p['text2']}; }}
+            {d} QLabel#ip_unit       {{ font-size: {_px(11)}px; color: {p['muted']}; }}
+            {d} QLabel#ip_info       {{ font-size: {_px(10)}px; color: {p['muted']}; }}
+            {d} QLabel#ip_status     {{ font-size: {_px(11)}px; font-weight: 600; color: {p['text2']}; }}
+            {d} QLabel#ip_res_name   {{ font-size: {_px(11)}px; color: {p['muted']}; font-weight: 500; }}
+            {d} QLabel#ip_res_val    {{ font-size: {_px(13)}px; font-weight: 700; color: {p['text']};
                                        font-family: "Consolas", "Courier New", monospace; }}
-            {d} QLabel#ip_preview    {{ font-size: 12px; color: {p['blue']};
+            {d} QLabel#ip_preview    {{ font-size: {_px(12)}px; color: {p['blue']};
                                        font-family: "Consolas", "Courier New", monospace;
                                        background: {p['blue_light']}; border: 1px solid {p['border']};
-                                       border-radius: 6px; padding: 10px 12px; line-height: 1.6; }}
-            {d} QFrame#ip_card    {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: 8px; }}
-            {d} QFrame#ip_subcard {{ background: {p['input_bg']}; border: 1px solid {p['border']}; border-radius: 6px; }}
+                                       border-radius: {_px(6)}px; padding: {_px(10)}px {_px(12)}px; line-height: 1.6; }}
+            {d} QFrame#ip_card    {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: {_px(8)}px; }}
+            {d} QFrame#ip_subcard {{ background: {p['input_bg']}; border: 1px solid {p['border']}; border-radius: {_px(6)}px; }}
             {d} QFrame#ip_v_sep   {{ color: {p['border']}; background: {p['border']}; }}
             {d} QFrame#ip_pi_row  {{ background: {p['input_bg']}; border-left: 3px solid {p['border']}; border-radius: 0px; }}
             {d} QFrame#ip_pi_row * {{ border: none; background: transparent; }}
-            {d} QLabel#ip_pi_name {{ font-size: 12px; font-weight: 700; color: {p['text2']}; min-width: 28px; }}
-            {d} QLabel#ip_pi_val  {{ font-size: 13px; font-weight: 700; color: {p['text']};
+            {d} QLabel#ip_pi_name {{ font-size: {_px(12)}px; font-weight: 700; color: {p['text2']}; min-width: {_px(28)}px; }}
+            {d} QLabel#ip_pi_val  {{ font-size: {_px(13)}px; font-weight: 700; color: {p['text']};
                                      font-family: "Consolas", "Courier New", monospace; }}
-            {d} QLabel#ip_pi_unit {{ font-size: 10px; color: {p['muted']}; min-width: 70px; }}
+            {d} QLabel#ip_pi_unit {{ font-size: {_px(10)}px; color: {p['muted']}; min-width: {_px(70)}px; }}
             {d} QLineEdit {{
                 background: {p['input_bg']}; color: {p['text']};
-                border: 1px solid {p['border']}; border-radius: 5px;
-                padding: 4px 8px; font-size: 12px; min-height: 22px;
+                border: 1px solid {p['border']}; border-radius: {_px(5)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(12)}px; min-height: {_px(22)}px;
                 selection-background-color: {p['blue']};
             }}
             {d} QLineEdit:focus    {{ border-color: {p['blue']}; }}
             {d} QLineEdit:disabled {{ background: {p['bg']}; color: {p['muted']}; }}
             {d} QPushButton#ip_btn_primary {{
                 background: {p['blue']}; color: white; border: none;
-                border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 700;
+                border-radius: {_px(6)}px; padding: {_px(8)}px {_px(14)}px; font-size: {_px(12)}px; font-weight: 700;
             }}
             {d} QPushButton#ip_btn_primary:hover    {{ background: {p['blue_dark']}; }}
             {d} QPushButton#ip_btn_primary:disabled {{ background: {p['muted']}; color: {p['bg']}; }}
             {d} QPushButton#ip_btn_secondary {{
                 background: {p['card']}; color: {p['blue']};
-                border: 1.5px solid {p['blue']}; border-radius: 6px;
-                padding: 8px 14px; font-size: 12px; font-weight: 600;
+                border: 1.5px solid {p['blue']}; border-radius: {_px(6)}px;
+                padding: {_px(8)}px {_px(14)}px; font-size: {_px(12)}px; font-weight: 600;
             }}
             {d} QPushButton#ip_btn_secondary:hover    {{ background: {p['blue_light']}; }}
             {d} QPushButton#ip_btn_secondary:disabled {{ color: {p['muted']}; border-color: {p['border']}; }}
             QToolTip {{
                 background: #1E293B; color: #F1F5F9;
-                border: 1px solid #334155; border-radius: 4px;
-                padding: 4px 8px; font-size: 11px;
+                border: 1px solid #334155; border-radius: {_px(4)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(11)}px;
             }}
         """)
 
@@ -745,7 +756,7 @@ class InertiaIdentification(QDialog):
             logging.info(f"Speed PI: Km={Km_f:.4f} Dy={Dy:.2f} Kp={Kp:.6f} Ki={Ki:.8f}")
 
             # Write J into firmware motor param struct (mtheta), then damp/dyn, then susp
-            self.serial_manager.send(f"s mtheta{dec_encode(J_f)}", expect_response=True)
+            self.serial_manager.send(f"s mtheta {dec_encode(J_f)}", expect_response=False)
             self.serial_manager.send(f"s damp  {dec_encode(Dg)}",  expect_response=True)
             self.serial_manager.send(f"s dyn   {dec_encode(Dy)}",  expect_response=True)
             self.serial_manager.send("s susp  ", expect_response=False)

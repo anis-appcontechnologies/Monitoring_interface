@@ -82,8 +82,10 @@ from PySide6.QtWidgets import (
     QScrollArea, QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QSettings, QMetaObject, Q_ARG, QSize
+from PySide6.QtCore import (Qt, QTimer, Signal, QSettings, QMetaObject, Q_ARG, QSize,
+                            QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve)
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPixmap, QColor, QPen, QIcon, QBrush
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 try:
     import qtawesome as qta
@@ -110,18 +112,21 @@ VARIABLE_CODES = {
     "None": 0, "IS1": 1, "IS2": 2, "IS3": 3,
     "US1": 4, "US2": 5, "US3": 6,
     "ISD": 7, "ISQ": 8, "UDC": 9, "DMACNT": 10,
+    "SPEED_RPM": 11, "USD": 12, "USQ": 13, "ISQ_REF": 14,
 }
 
 VARIABLE_NAMES = {
     0: "None", 1: "IS1", 2: "IS2", 3: "IS3",
     4: "US1", 5: "US2", 6: "US3",
     7: "ISD", 8: "ISQ", 9: "UDC", 10: "DMACNT",
+    11: "SPEED_RPM", 12: "USD", 13: "USQ", 14: "ISQ_REF",
 }
 
 VARIABLE_DATATYPES = {
     0: 0, 1: 1, 2: 1, 3: 1,
     4: 1, 5: 1, 6: 1,
     7: 1, 8: 1, 9: 1, 10: 2,
+    11: 1, 12: 1, 13: 1, 14: 1,
 }
 
 CHANNEL_COLORS = ['#2196F3', '#F44336', '#4CAF50', '#FF9800']
@@ -172,12 +177,12 @@ def _apply_mono(widget):
 
 def _make_maximize_icon(color_hex: str, size: int = 16) -> QIcon:
     """Expand icon via QtAwesome."""
-    return qta.icon("fa5s.expand-alt", color=color_hex)
+    return qta.icon("ph.arrows-out", color=color_hex)
 
 
 def _make_restore_icon(color_hex: str, size: int = 16) -> QIcon:
     """Compress icon via QtAwesome."""
-    return qta.icon("fa5s.compress-alt", color=color_hex)
+    return qta.icon("ph.arrows-in", color=color_hex)
 
 
 def _make_elf_icon(size: int = 16, dark: bool = False) -> QIcon:
@@ -288,9 +293,9 @@ def _make_arrow_png(direction: str, color_hex: str, size: int = 8) -> str:
 def _make_theme_icon(dark_mode: bool, size: int = 18) -> QIcon:
     """Sun (switch to dark) or moon (switch to light) via QtAwesome."""
     if dark_mode:
-        return qta.icon("fa5s.sun", color="#F59E0B")
+        return qta.icon("ph.sun", color="#F59E0B")
     else:
-        return qta.icon("fa5s.moon", color="#7C8DB5")
+        return qta.icon("ph.moon", color="#7C8DB5")
 
 
 def _make_theme_icon_fallback(dark_mode: bool, size: int = 18) -> QIcon:
@@ -367,6 +372,16 @@ def _get_palette():
 
 
 from protocol import dec_encode
+
+def _px(n: int) -> int:
+    try:
+        from PySide6.QtWidgets import QApplication
+        s = QApplication.primaryScreen()
+        if s is not None:
+            return max(1, round(n * s.logicalDotsPerInch() / 96.0))
+    except Exception:
+        pass
+    return n
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM COMBO — looks like QComboBox, popup has [−] per row
@@ -662,11 +677,11 @@ QPushButton#sc_combo_row_rem:pressed {{
             if name not in self._PROTECTED:
                 rem = QPushButton()
                 rem.setObjectName("sc_combo_row_rem")
-                rem.setFixedSize(22, 22)
+                rem.setFixedSize(_px(22), _px(22))
                 rem.setCursor(Qt.CursorShape.PointingHandCursor)
                 rem.setToolTip(f"Remove '{name}'")
                 try:
-                    rem.setIcon(qta.icon("fa5s.trash-alt", color="white"))
+                    rem.setIcon(qta.icon("ph.trash", color="white"))
                     rem.setIconSize(QSize(11, 11))
                 except Exception:
                     rem.setText("−")
@@ -675,7 +690,7 @@ QPushButton#sc_combo_row_rem:pressed {{
                 rl.addWidget(rem)
             else:
                 spacer = QWidget()
-                spacer.setFixedSize(22, 22)
+                spacer.setFixedSize(_px(22), _px(22))
                 rl.addWidget(spacer)
 
             lay.addWidget(row)
@@ -739,8 +754,8 @@ class _ElfVarPickerDialog(QDialog):
                  toast_cb=None):
         super().__init__(parent)
         self.setWindowTitle(f"Variables — Ch{ch_idx + 1}")
-        self.setMinimumSize(300, 460)
-        self.resize(300, 460)
+        self.setMinimumSize(_px(300), _px(460))
+        self.resize(_px(300), _px(460))
         self._all   = all_names
         self._combo = combo
         self._ch_idx = ch_idx
@@ -818,7 +833,7 @@ class _ElfVarPickerDialog(QDialog):
             already_in = name in combo_items
             btn = QPushButton("−" if already_in else "+")
             btn.setObjectName("sc_btn_elf_minus" if already_in else "sc_btn_elf_plus")
-            btn.setFixedSize(24, 24)
+            btn.setFixedSize(_px(24), _px(24))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked=False, n=name, b=btn: self._toggle(n, b))
             row.addWidget(btn)
@@ -878,6 +893,8 @@ class ScopeWindow(QDialog):
     _sig_elf_loaded     = Signal(int)                      # count of vars loaded
     _sig_elf_scanning   = Signal()                         # folder scan started
     _sig_elf_reloaded   = Signal(int)                      # auto-reload after reflash
+    _sig_elf_pick       = Signal(list)                     # multiple ELFs found — show picker on main thread
+    _sig_trig_status    = Signal(str)                      # trigger state badge update
 
     @property
     def fpwm(self):
@@ -892,8 +909,9 @@ class ScopeWindow(QDialog):
         super().__init__(parent)
         self.setObjectName("sc_dialog")
         self.setWindowTitle("Oscilloscope / Scope")
-        self.setMinimumSize(560, 560)
-        self.resize(680, 660)
+        _scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(_px(680), int(_scr.width() * 0.8)), min(_px(660), int(_scr.height() * 0.8)))
+        self.setMinimumSize(_px(560), _px(560))
 
         self.serial_manager = serial_manager
         self._fpwm_raw = fpwm  # None until confirmed from firmware on connect
@@ -904,14 +922,15 @@ class ScopeWindow(QDialog):
         self._configuring         = False
         self._realtime_running    = False
 
-        self._scroll_running      = False
-        self._scroll_rings        = None
-        self._scroll_t_ring       = None
-        self._scroll_t0           = 0.0
-        self._scroll_t_display    = 1.0
-        self._scroll_frame_count  = 0
-        self._scroll_lock         = threading.Lock()
-        self._scroll_rechalf_val  = 0
+        self._scroll_running       = False
+        self._scroll_array         = None   # np.zeros((4, scroll_total), float32)
+        self._scroll_write_ptr     = 0
+        self._scroll_read_ptr      = 0
+        self._scroll_num_samples   = 0
+        self._scroll_display_window = 0
+        self._scroll_t_display     = 1.0
+        self._scroll_frame_count   = 0
+        self._scroll_rechalf_val   = 0
         self._scroll_poll_timer   = None   # kept for closeEvent cleanup compat
         self._scroll_display_timer= None
         self._scroll_half_stop    = threading.Event()
@@ -969,6 +988,12 @@ class ScopeWindow(QDialog):
         self._sig_elf_loaded.connect(self._on_elf_loaded_slot)
         self._sig_elf_scanning.connect(self._on_elf_scanning_slot)
         self._sig_elf_reloaded.connect(self._on_elf_reloaded_slot)
+        self._sig_elf_pick.connect(self._on_elf_pick)
+        self._sig_trig_status.connect(self._on_trig_status)
+
+        self._elf_pick_evt          = threading.Event()
+        self._pending_elf_choice: str = ""
+        self._elf_cancel_requested  = False
 
         # ELF file watcher — detects reflash (file changed) or deletion
         from PySide6.QtCore import QFileSystemWatcher
@@ -985,6 +1010,11 @@ class ScopeWindow(QDialog):
         self._update_sample_counter()
         self._install_shortcuts()
         self._load_session_config()
+
+        # 500 ms timer: refresh the connection LED at top of CHANNELS panel
+        self._sc_led_timer = QTimer(self)
+        self._sc_led_timer.timeout.connect(self._refresh_sc_led)
+        self._sc_led_timer.start(500)
         # Prevent any button from becoming the "default" (Enter-key target)
         for btn in self.findChildren(QPushButton):
             btn.setAutoDefault(False)
@@ -1034,6 +1064,12 @@ class ScopeWindow(QDialog):
         ch_section_title = QLabel("CHANNELS")
         ch_section_title.setObjectName("sc_section_title")
         ch_hdr.addWidget(ch_section_title)
+
+        self._sc_conn_led = QLabel("⬤  Disconnected")
+        self._sc_conn_led.setObjectName("sc_led_disconnected")
+        self._sc_conn_led.setToolTip("Serial connection status")
+        ch_hdr.addWidget(self._sc_conn_led)
+
         ch_hdr.addStretch(1)
 
         # ELF load button — one-time action, sits in the header
@@ -1043,17 +1079,27 @@ class ScopeWindow(QDialog):
         self._btn_elf_load.setToolTip(
             "Load an ELF / project folder once to unlock variable names\n"
             "from your STM32 firmware. Click [+] on any channel to add them.")
-        self._btn_elf_load.setFixedSize(28, 28)
+        self._btn_elf_load.setFixedSize(_px(28), _px(28))
         self._btn_elf_load.setIcon(_make_elf_icon(16, self._is_dark(_get_palette())))
         self._btn_elf_load.setIconSize(QSize(16, 16))
         self._btn_elf_load.clicked.connect(self._on_elf_load)
         ch_hdr.addWidget(self._btn_elf_load)
 
+        # Cancel button — shown only during folder scan
+        self._btn_elf_cancel = QPushButton("✕ Cancel")
+        self._btn_elf_cancel.setObjectName("sc_btn_elf_cancel")
+        self._btn_elf_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_elf_cancel.setToolTip("Cancel folder scan")
+        self._btn_elf_cancel.setFixedHeight(_px(22))
+        self._btn_elf_cancel.clicked.connect(self._on_elf_cancel)
+        self._btn_elf_cancel.setVisible(False)
+        ch_hdr.addWidget(self._btn_elf_cancel)
+
         self._btn_dark = QPushButton()
         self._btn_dark.setObjectName("sc_btn_compact")
         self._btn_dark.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_dark.setToolTip("Toggle dark / light mode  [Ctrl+Shift+D]")
-        self._btn_dark.setFixedSize(28, 28)
+        self._btn_dark.setFixedSize(_px(28), _px(28))
         self._btn_dark.setIcon(_make_theme_icon(dark_mode=self._is_dark(_get_palette())))
         self._btn_dark.setIconSize(QSize(16, 16))
         self._btn_dark.clicked.connect(self._on_dark_clicked)
@@ -1062,7 +1108,7 @@ class ScopeWindow(QDialog):
         self._btn_compact.setObjectName("sc_btn_compact")
         self._btn_compact.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_compact.setToolTip("Maximize / Restore  [Ctrl+M]")
-        self._btn_compact.setFixedSize(28, 28)
+        self._btn_compact.setFixedSize(_px(28), _px(28))
         self._btn_compact.setIcon(_make_maximize_icon("#6B7280"))
         self._btn_compact.setIconSize(QSize(16, 16))
         self._btn_compact.clicked.connect(self._on_compact_clicked)
@@ -1093,14 +1139,14 @@ class ScopeWindow(QDialog):
             dot = QLabel("●")
             dot.setObjectName(f"sc_ch_dot_{i}")
             self._ch_dots.append(dot)
-            dot.setFixedWidth(14)
+            dot.setFixedWidth(_px(14))
             ch_grid.addWidget(dot, row_idx, col_base,
                               Qt.AlignmentFlag.AlignVCenter)
 
             # name label
             name_lbl = QLabel(f"Ch{i+1}")
             name_lbl.setObjectName("sc_ch_name")
-            name_lbl.setFixedWidth(28)
+            name_lbl.setFixedWidth(_px(28))
             ch_grid.addWidget(name_lbl, row_idx, col_base + 1,
                               Qt.AlignmentFlag.AlignVCenter)
 
@@ -1115,7 +1161,7 @@ class ScopeWindow(QDialog):
             # [+] open ELF variable picker
             plus_btn = QPushButton("+")
             plus_btn.setObjectName("sc_btn_ch_add")
-            plus_btn.setFixedSize(22, 22)
+            plus_btn.setFixedSize(_px(22), _px(22))
             plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             plus_btn.setToolTip("Add ELF variable to this channel  (load ELF first)")
             plus_btn.setEnabled(False)
@@ -1130,7 +1176,7 @@ class ScopeWindow(QDialog):
             scale_cb.setObjectName("sc_ch_scale")
             scale_cb.addItems(["×1", "×4", "×10", "×100"])
             scale_cb.setCurrentIndex(0)
-            scale_cb.setFixedWidth(58)
+            scale_cb.setFixedWidth(_px(58))
             scale_cb.setCursor(Qt.CursorShape.PointingHandCursor)
             scale_cb.setToolTip("Display scale (plot only — CSV export keeps raw values)")
             scale_cb.currentIndexChanged.connect(
@@ -1216,7 +1262,7 @@ class ScopeWindow(QDialog):
         self._spin_rectime.setRange(1.0, 100000.0)
         self._spin_rectime.setDecimals(1)
         self._spin_rectime.setValue(20.0)
-        self._spin_rectime.setMinimumWidth(80)
+        self._spin_rectime.setMinimumWidth(_px(80))
         self._spin_rectime.setCursor(Qt.CursorShape.PointingHandCursor)
         self._spin_rectime.valueChanged.connect(self._on_config_changed)
         self._spin_rectime.valueChanged.connect(self._on_rectime_changed)
@@ -1235,7 +1281,7 @@ class ScopeWindow(QDialog):
         self._spin_samplefreq.setRange(1.0, self.fpwm)
         self._spin_samplefreq.setDecimals(1)
         self._spin_samplefreq.setValue(self.fpwm)
-        self._spin_samplefreq.setMinimumWidth(80)
+        self._spin_samplefreq.setMinimumWidth(_px(80))
         self._spin_samplefreq.setCursor(Qt.CursorShape.PointingHandCursor)
         self._spin_samplefreq.valueChanged.connect(self._on_config_changed)
         self._spin_samplefreq.valueChanged.connect(self._on_samplefreq_changed)
@@ -1255,7 +1301,7 @@ class ScopeWindow(QDialog):
         self._spin_tdisplay.setSingleStep(0.5)
         self._spin_tdisplay.setDecimals(1)
         self._spin_tdisplay.setValue(1.0)
-        self._spin_tdisplay.setMinimumWidth(70)
+        self._spin_tdisplay.setMinimumWidth(_px(70))
         self._spin_tdisplay.setCursor(Qt.CursorShape.PointingHandCursor)
         self._spin_tdisplay.valueChanged.connect(self._on_tdisplay_change)
         self._spin_tdisplay.setKeyboardTracking(False)
@@ -1294,7 +1340,7 @@ class ScopeWindow(QDialog):
         self._btn_configure = QPushButton("Configure")
         self._btn_configure.setObjectName("sc_btn_primary")
         self._btn_configure.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_configure.setFixedHeight(30)
+        self._btn_configure.setFixedHeight(_px(30))
         self._btn_configure.setToolTip("Apply channel and recording settings  [Ctrl+G]")
         self._btn_configure.clicked.connect(self._on_configure_clicked)
         btn_row.addWidget(self._btn_configure)
@@ -1302,7 +1348,7 @@ class ScopeWindow(QDialog):
         self._btn_single = QPushButton("Single Shot")
         self._btn_single.setObjectName("sc_btn_outline")
         self._btn_single.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_single.setFixedHeight(30)
+        self._btn_single.setFixedHeight(_px(30))
         self._btn_single.setToolTip("Record one waveform frame  [Ctrl+1]")
         self._btn_single.clicked.connect(self._on_single_clicked)
         btn_row.addWidget(self._btn_single)
@@ -1310,7 +1356,7 @@ class ScopeWindow(QDialog):
         self._btn_realtime = QPushButton("Real Time ▸")
         self._btn_realtime.setObjectName("sc_btn_outline")
         self._btn_realtime.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_realtime.setFixedHeight(30)
+        self._btn_realtime.setFixedHeight(_px(30))
         self._btn_realtime.setToolTip("Continuous real-time mode  [Ctrl+R]")
         self._btn_realtime.clicked.connect(self._on_realtime_clicked)
         btn_row.addWidget(self._btn_realtime)
@@ -1318,7 +1364,7 @@ class ScopeWindow(QDialog):
         self._btn_scroll = QPushButton("Scroll ▸")
         self._btn_scroll.setObjectName("sc_btn_outline")
         self._btn_scroll.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_scroll.setFixedHeight(30)
+        self._btn_scroll.setFixedHeight(_px(30))
         self._btn_scroll.setToolTip("Continuous scroll mode  [Ctrl+S]")
         self._btn_scroll.clicked.connect(self._on_scroll_clicked)
         btn_row.addWidget(self._btn_scroll)
@@ -1327,7 +1373,7 @@ class ScopeWindow(QDialog):
         self._btn_export.setObjectName("sc_btn_outline")
         self._btn_export.setEnabled(False)
         self._btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_export.setFixedHeight(30)
+        self._btn_export.setFixedHeight(_px(30))
         self._btn_export.setToolTip("Export waveform data as CSV  [Ctrl+E]")
         self._btn_export.clicked.connect(self._on_export_clicked)
         btn_row.addWidget(self._btn_export)
@@ -1336,8 +1382,8 @@ class ScopeWindow(QDialog):
         self._btn_screenshot.setObjectName("sc_btn_outline")
         self._btn_screenshot.setEnabled(False)
         self._btn_screenshot.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_screenshot.setFixedSize(30, 30)
-        self._btn_screenshot.setIcon(qta.icon("fa5s.camera", color="#7B9AB8"))
+        self._btn_screenshot.setFixedSize(_px(30), _px(30))
+        self._btn_screenshot.setIcon(qta.icon("ph.camera", color="#7B9AB8"))
         self._btn_screenshot.setIconSize(QSize(14, 14))
         self._btn_screenshot.setToolTip("Save PNG screenshot of current waveform")
         self._btn_screenshot.clicked.connect(self._on_screenshot_clicked)
@@ -1353,8 +1399,8 @@ class ScopeWindow(QDialog):
         self._btn_drawstyle.setCheckable(True)
         self._btn_drawstyle.setChecked(self._drawstyle == "steps-post")
         self._btn_drawstyle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_drawstyle.setFixedSize(30, 30)
-        _ds_icon = "fa5s.signal" if self._drawstyle == "steps-post" else "fa5s.chart-line"
+        self._btn_drawstyle.setFixedSize(_px(30), _px(30))
+        _ds_icon = "ph.chart-bar" if self._drawstyle == "steps-post" else "ph.chart-line"
         self._btn_drawstyle.setIcon(qta.icon(_ds_icon, color="#7B9AB8"))
         self._btn_drawstyle.setIconSize(QSize(14, 14))
         self._btn_drawstyle.setToolTip("Toggle staircase / smooth waveform style")
@@ -1365,8 +1411,8 @@ class ScopeWindow(QDialog):
         self._btn_ab.setObjectName("sc_btn_tool")
         self._btn_ab.setCheckable(True)
         self._btn_ab.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_ab.setFixedSize(30, 30)
-        self._btn_ab.setIcon(qta.icon("fa5s.crosshairs", color="#7B9AB8"))
+        self._btn_ab.setFixedSize(_px(30), _px(30))
+        self._btn_ab.setIcon(qta.icon("ph.crosshair", color="#7B9AB8"))
         self._btn_ab.setIconSize(QSize(14, 14))
         self._btn_ab.setToolTip(
             "Measurement cursors — click graph to place marker A, click again for marker B\n"
@@ -1396,7 +1442,7 @@ class ScopeWindow(QDialog):
         self._combo_trig_ch = QComboBox()
         self._combo_trig_ch.setObjectName("sc_combo")
         self._combo_trig_ch.addItems(["Ch1", "Ch2", "Ch3", "Ch4"])
-        self._combo_trig_ch.setFixedWidth(90)
+        self._combo_trig_ch.setFixedWidth(_px(90))
         self._combo_trig_ch.setCursor(Qt.CursorShape.PointingHandCursor)
         self._combo_trig_ch.setToolTip("Enable the Trigger checkbox to configure")
         self._combo_trig_ch.setEnabled(False)
@@ -1405,7 +1451,7 @@ class ScopeWindow(QDialog):
         self._combo_trig_edge = QComboBox()
         self._combo_trig_edge.setObjectName("sc_combo")
         self._combo_trig_edge.addItems(["Rising ▲", "Falling ▼"])
-        self._combo_trig_edge.setFixedWidth(100)
+        self._combo_trig_edge.setFixedWidth(_px(100))
         self._combo_trig_edge.setCursor(Qt.CursorShape.PointingHandCursor)
         self._combo_trig_edge.setToolTip("Enable the Trigger checkbox to configure")
         self._combo_trig_edge.setEnabled(False)
@@ -1420,7 +1466,7 @@ class ScopeWindow(QDialog):
         self._spin_trig_level.setRange(-99999.0, 99999.0)
         self._spin_trig_level.setDecimals(2)
         self._spin_trig_level.setValue(0.0)
-        self._spin_trig_level.setFixedWidth(80)
+        self._spin_trig_level.setFixedWidth(_px(80))
         self._spin_trig_level.setCursor(Qt.CursorShape.PointingHandCursor)
         self._spin_trig_level.setEnabled(False)
         self._spin_trig_level.setToolTip("Threshold value — capture fires when channel crosses this level\nYou can also drag the orange dashed line on the graph")
@@ -1429,6 +1475,12 @@ class ScopeWindow(QDialog):
         self._spin_trig_level.valueChanged.connect(self._on_trig_level_changed)
         _apply_mono(self._spin_trig_level)
         trig_row.addWidget(self._spin_trig_level)
+
+        self._lbl_trig_badge = QLabel("IDLE")
+        self._lbl_trig_badge.setObjectName("sc_trig_badge")
+        self._lbl_trig_badge.setProperty("trig_state", "IDLE")
+        self._lbl_trig_badge.setVisible(False)
+        trig_row.addWidget(self._lbl_trig_badge)
 
         trig_row.addStretch(1)
 
@@ -1448,7 +1500,7 @@ class ScopeWindow(QDialog):
 
         self._lbl_status_pill = QLabel("IDLE")
         self._lbl_status_pill.setObjectName("sc_pill_idle")
-        self._lbl_status_pill.setFixedHeight(20)
+        self._lbl_status_pill.setFixedHeight(_px(20))
         status_row.addWidget(self._lbl_status_pill)
 
         self._lbl_status = QLabel("Ready. Select channels and press Configure.")
@@ -1539,22 +1591,41 @@ class ScopeWindow(QDialog):
         self._live_strip.setVisible(False)
         graph_lay.addWidget(self._live_strip)
 
-        self._lbl_coords = QLabel()
-        self._lbl_coords.setObjectName("sc_coords_label")
-        self._lbl_coords.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        _apply_mono(self._lbl_coords)
-        graph_lay.addWidget(self._lbl_coords)
+        # ── Cursor readout bar — sits BELOW the canvas, hidden until cursor mode active ──
+        self._coords_bar = QFrame()
+        self._coords_bar.setObjectName("sc_coords_bar")
+        coords_lay = QHBoxLayout(self._coords_bar)
+        coords_lay.setContentsMargins(10, 2, 10, 2)
+        coords_lay.setSpacing(16)
+        _ico_lbl = QLabel("⊕")
+        _ico_lbl.setObjectName("sc_coords_ico")
+        coords_lay.addWidget(_ico_lbl)
+        self._lbl_t = QLabel("t = —")
+        self._lbl_t.setObjectName("sc_coords_val")
+        _apply_mono(self._lbl_t)
+        coords_lay.addWidget(self._lbl_t)
+        _sep2 = QFrame()
+        _sep2.setFrameShape(QFrame.Shape.VLine)
+        _sep2.setObjectName("sc_coords_sep")
+        coords_lay.addWidget(_sep2)
+        self._lbl_v = QLabel("val = —")
+        self._lbl_v.setObjectName("sc_coords_val")
+        _apply_mono(self._lbl_v)
+        coords_lay.addWidget(self._lbl_v)
+        coords_lay.addStretch(1)
+        self._coords_bar.setVisible(False)
+        graph_lay.addWidget(self._coords_bar)
 
-        # Scroll hint overlay — drawn on the axes, fades/animates until first click
-        self._hint_active     = True
-        self._hint_step       = 0
-        self._hint_ax_text    = None   # matplotlib Text artist on the axes
-        self._hint_static     = "  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom"
-        self._lbl_coords.setText(self._hint_static)
-        self._hint_timer      = QTimer(self)
-        self._hint_timer.setInterval(480)
-        self._hint_timer.timeout.connect(self._tick_hint)
-        self._hint_timer.start()
+        # Keep a dummy _coords_overlay for compatibility with any code that hides/shows it
+        self._coords_overlay = self._coords_bar
+
+        # Scroll hint — Qt overlay widget on canvas, animated opacity, dismissed on first interact
+        self._hint_active = True
+        self._hint_overlay = self._build_hint_overlay()
+        self._hint_anim    = self._build_hint_animation(self._hint_overlay)
+        self._hint_anim.start()
+        # Position overlay after canvas is shown
+        QTimer.singleShot(200, self._reposition_hint)
 
         body_lay.addWidget(graph_frame, 4)
 
@@ -1601,58 +1672,90 @@ class ScopeWindow(QDialog):
             pass
         self.canvas.draw()
 
-    # Alternating hand icons for scroll hint
-    _HINT_ICONS = ["\U0001F44B", "\U0001F91A"]
+    def _build_hint_overlay(self) -> QLabel:
+        """Floating Qt label overlaid on the canvas — no matplotlib text involved."""
+        lbl = QLabel(
+            "☝  Scroll wheel to zoom   |   Right-click + drag to pan",
+            parent=self.canvas,
+        )
+        lbl.setObjectName("scroll_hint_overlay")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.setStyleSheet(
+            "QLabel#scroll_hint_overlay {"
+            "  background: rgba(30,30,50,160);"
+            "  color: #DDDDFF;"
+            "  border-radius: 10px;"
+            "  padding: 8px 20px;"
+            "  font-size: 11px;"
+            "  font-style: italic;"
+            "}"
+        )
+        lbl.adjustSize()
+        lbl.show()
+        effect = QGraphicsOpacityEffect(lbl)
+        lbl.setGraphicsEffect(effect)
+        return lbl
+
+    def _build_hint_animation(self, lbl: QLabel) -> QSequentialAnimationGroup:
+        """Pulse opacity: fade in → hold → fade out → hold → repeat (3×) then stop."""
+        effect = lbl.graphicsEffect()
+        grp = QSequentialAnimationGroup(lbl)
+
+        def _fade(start, end, dur):
+            a = QPropertyAnimation(effect, b"opacity", lbl)
+            a.setStartValue(start)
+            a.setEndValue(end)
+            a.setDuration(dur)
+            a.setEasingCurve(QEasingCurve.Type.InOutSine)
+            return a
+
+        def _pause(ms):
+            from PySide6.QtCore import QPauseAnimation
+            return QPauseAnimation(ms, lbl)
+
+        for _ in range(3):
+            grp.addAnimation(_fade(0.0, 1.0, 700))
+            grp.addAnimation(_pause(2200))
+            grp.addAnimation(_fade(1.0, 0.0, 700))
+            grp.addAnimation(_pause(600))
+
+        grp.finished.connect(self._stop_hint)
+        return grp
+
+    def _reposition_hint(self):
+        """Centre the overlay on the canvas."""
+        if not self._hint_active or not self._hint_overlay:
+            return
+        cw = self.canvas.width()
+        ch = self.canvas.height()
+        lbl = self._hint_overlay
+        lbl.adjustSize()
+        x = max(0, (cw - lbl.width()) // 2)
+        y = max(0, (ch - lbl.height()) // 2)
+        lbl.move(x, y)
 
     def _ensure_hint_text(self):
-        """Create (or re-create) the on-graph hint annotation after a plot."""
-        if not self._hint_active:
-            return
-        p = _get_palette()
-        dark = self._is_dark(p)
-        hint_color = "#AAAACC" if dark else "#8888AA"
-        if self._hint_ax_text is not None:
-            try:
-                self._hint_ax_text.remove()
-            except Exception:
-                pass
-        icon = self._HINT_ICONS[self._hint_step % 2]
-        self._hint_ax_text = self.ax.text(
-            0.5, 0.07,
-            f"{icon}  Scroll wheel to zoom  |  Right-click + drag to pan",
-            transform=self.ax.transAxes,
-            ha='center', va='center',
-            fontsize=9, color=hint_color,
-            alpha=0.75,
-            style='italic',
-            zorder=10,
-        )
-
-    def _tick_hint(self):
-        if not self._hint_active:
-            return
-        self._hint_step += 1
-        if self._hint_ax_text is not None:
-            icon = self._HINT_ICONS[self._hint_step % 2]
-            self._hint_ax_text.set_text(
-                f"{icon}  Scroll wheel to zoom  |  Right-click + drag to pan"
-            )
-            self._blit_bg = None
-            self.canvas.draw_idle()
+        """Re-position the overlay after a plot redraw (replaces old matplotlib text path)."""
+        self._reposition_hint()
 
     def _stop_hint(self):
         if not self._hint_active:
             return
         self._hint_active = False
-        self._hint_timer.stop()
-        if self._hint_ax_text is not None:
+        if hasattr(self, '_hint_anim'):
+            self._hint_anim.stop()
+        if self._hint_overlay is not None:
             try:
-                self._hint_ax_text.remove()
-            except Exception:
+                self._hint_overlay.hide()
+                self._hint_overlay.deleteLater()
+            except RuntimeError:
                 pass
-            self._hint_ax_text = None
-            self._blit_bg = None
-            self.canvas.draw_idle()
+            self._hint_overlay = None
+
+    def _reposition_coords(self):
+        """No-op — coords now live in a bar below the canvas, no repositioning needed."""
+        pass
 
     # ══════════════════════════════════════════════════════════════════════════
     #  STYLING
@@ -1675,6 +1778,8 @@ class ScopeWindow(QDialog):
         RED_DARK  = p.get('red_dark', '#7F1212')
         RED_BG    = p.get('red_bg',   '#FEECEC')
         RED_BDR   = p.get('red_border','#F5BABA')
+        BLUE      = p.get('blue',     '#C0272D')
+        BLUE_LIGHT = p.get('blue_light', '#F9ECEC')
 
         CARD      = p['card']
         BG        = p['bg']
@@ -1863,16 +1968,51 @@ class ScopeWindow(QDialog):
     border-radius: 3px; padding: 1px 4px;
 }}
 
-/* ── Coordinates overlay ─────────────────────────────────────── */
-#sc_dialog QLabel#sc_coords_label {{
-    font-size: 11px;
-    font-family: "Consolas", "Cascadia Code", monospace;
-    font-weight: 600;
-    color: {TEXT2};
-    background: {INPUT_BG};
+/* ── Cursor readout bar (below canvas, visible only in cursor mode) ── */
+#sc_coords_bar {{
+    background: {CARD};
     border-top: 1px solid {BORDER};
-    padding: 3px 8px;
+    min-height: {_px(24)}px;
+    max-height: {_px(28)}px;
 }}
+#sc_coords_ico {{
+    color: {p['blue']};
+    font-size: {_px(12)}px;
+    background: transparent;
+}}
+#sc_coords_val {{
+    color: {p['text']};
+    font-size: {_px(11)}px;
+    font-family: "Consolas", "Cascadia Code", monospace;
+    background: transparent;
+}}
+#sc_coords_sep {{
+    color: {BORDER};
+    max-width: 1px;
+}}
+
+/* ── Scope connection LED ────────────────────────────────────── */
+#sc_dialog QLabel#sc_led_disconnected {{
+    color: {MUTED}; font-size: 11px; font-weight: 600;
+    background: transparent;
+}}
+#sc_dialog QLabel#sc_led_connected {{
+    color: {p['green']}; font-size: 11px; font-weight: 700;
+    background: transparent;
+}}
+
+/* ── Trigger status badge ────────────────────────────────────── */
+#sc_trig_badge {{
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+}}
+#sc_trig_badge[trig_state="IDLE"]      {{ background:#374151; color:#6B7280; }}
+#sc_trig_badge[trig_state="ARMED"]     {{ background:#1D4ED8; color:#BFDBFE; }}
+#sc_trig_badge[trig_state="WAIT"]      {{ background:#92400E; color:#FDE68A; }}
+#sc_trig_badge[trig_state="TRIGGERED"] {{ background:#14532D; color:#86EFAC; }}
+#sc_trig_badge[trig_state="DONE"]      {{ background:#374151; color:#9CA3AF; }}
 
 /* ── No-port warning ─────────────────────────────────────────── */
 #sc_dialog QFrame#sc_no_port_frame {{
@@ -2129,7 +2269,7 @@ QPushButton#sc_combo_row_rem:pressed {{
 
 /* ── Tool toggle buttons (A/B, Zoom, Ghost) ──────────────────── */
 #sc_dialog QPushButton#sc_btn_tool {{
-    background: {INPUT_BG};
+    background: #FFFFFF;
     color: {TEXT2};
     border: 1px solid {BORDER};
     border-radius: 5px;
@@ -2139,14 +2279,14 @@ QPushButton#sc_combo_row_rem:pressed {{
     min-width: 42px;
 }}
 #sc_dialog QPushButton#sc_btn_tool:hover {{
-    border-color: {RED};
-    color: {RED};
-    background: {RED_BG};
+    border-color: {BLUE};
+    color: {BLUE};
+    background: {BLUE_LIGHT};
 }}
 #sc_dialog QPushButton#sc_btn_tool:checked {{
-    background: {RED};
-    color: white;
-    border-color: {RED_DARK};
+    background: {BLUE_LIGHT};
+    color: {BLUE};
+    border: 1.5px solid {BLUE};
 }}
 #sc_dialog QPushButton#sc_btn_tool:disabled {{
     background: {INPUT_BG};
@@ -2185,6 +2325,22 @@ QPushButton#sc_combo_row_rem:pressed {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 1px 7px;
+}}
+
+/* ── ELF cancel button ───────────────────────────────────────── */
+QPushButton#sc_btn_elf_cancel {{
+    background: {p['orange_bg']};
+    color: {p['orange']};
+    border: 1px solid {p['orange_border']};
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 7px;
+}}
+QPushButton#sc_btn_elf_cancel:hover {{
+    background: {p['orange']};
+    color: white;
+    border-color: {p['orange']};
 }}
 
 /* ── ELF status banner ───────────────────────────────────────── */
@@ -2458,7 +2614,7 @@ QDialog QLineEdit#sc_combo {{
         # small choice popup
         dlg = QDialog(self)
         dlg.setWindowTitle("Load ELF")
-        dlg.setFixedSize(300, 100)
+        dlg.setFixedSize(_px(300), _px(100))
         lay = QVBoxLayout(dlg)
         lay.setSpacing(8)
         row = QHBoxLayout()
@@ -2502,17 +2658,27 @@ QDialog QLineEdit#sc_combo {{
             val = chosen_path[0]
             if isinstance(val, tuple) and val[0] == "folder":
                 folder = val[1]
-                try:
-                    elfs = _elf_find_in_folder(folder)
-                except TimeoutError:
-                    self._sig_elf_loaded.emit(-2)   # -2 = timeout
+                elfs = _elf_find_in_folder(folder)
+                if self._elf_cancel_requested:
                     return
                 if not elfs:
                     self._sig_elf_loaded.emit(-1)   # -1 = not found
                     return
-                elf_path = elfs[0]   # take newest (Debug/Release preferred)
+                if len(elfs) == 1:
+                    elf_path = elfs[0]
+                else:
+                    # Multiple ELFs found — show picker on main thread, block worker until chosen
+                    self._elf_pick_evt.clear()
+                    self._sig_elf_pick.emit(elfs)
+                    self._elf_pick_evt.wait()
+                    elf_path = self._pending_elf_choice
+                    if not elf_path:
+                        self._sig_elf_loaded.emit(0)
+                        return
             else:
                 elf_path = val
+            if self._elf_cancel_requested:
+                return
             names = _elf_load(elf_path)
             self._sig_elf_loaded.emit(len(names))
 
@@ -2523,14 +2689,15 @@ QDialog QLineEdit#sc_combo {{
         """Show a list dialog when multiple ELFs are found, return chosen path."""
         dlg = QDialog()
         dlg.setWindowTitle("Multiple ELF files found")
-        dlg.setMinimumSize(480, 200)
+        dlg.setMinimumSize(_px(480), _px(200))
         lay = QVBoxLayout(dlg)
         lbl = QLabel("More than one ELF/AXF found — select one:")
         lbl.setObjectName("sc_input_label")
         lay.addWidget(lbl)
         lst = QListWidget()
         for p in elfs:
-            lst.addItem(os.path.relpath(p, folder))
+            label = os.path.relpath(p, folder) if folder else p
+            lst.addItem(label)
         lst.setCurrentRow(0)
         lay.addWidget(lst)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
@@ -2549,12 +2716,14 @@ QDialog QLineEdit#sc_combo {{
     def _on_elf_scanning_slot(self):
         """Start spinner animation on the ELF button."""
         self._elf_spinner_step = 0
+        self._elf_cancel_requested = False
         self._show_elf_banner("scanning",
-            "Scanning project folder for ELF files…")
+            "Scanning project folder for ELF files… (may take a moment for large projects)")
         if self._elf_spinner_timer is None:
             self._elf_spinner_timer = QTimer(self)
             self._elf_spinner_timer.timeout.connect(self._spin_elf_btn)
         self._elf_spinner_timer.start(120)
+        self._btn_elf_cancel.setVisible(True)
 
     def _spin_elf_btn(self):
         frame = self._SPINNER_FRAMES[self._elf_spinner_step % 4]
@@ -2569,6 +2738,8 @@ QDialog QLineEdit#sc_combo {{
         from PySide6.QtCore import QSize as _QS
         self._btn_elf_load.setIcon(_make_elf_icon(30, self._is_dark(_get_palette())))
         self._btn_elf_load.setIconSize(_QS(28, 28))
+        self._btn_elf_cancel.setVisible(False)
+        self._elf_cancel_requested = False
 
     def _show_elf_banner(self, state: str, msg: str):
         """state: 'scanning' | 'ok' | 'error'"""
@@ -2591,11 +2762,6 @@ QDialog QLineEdit#sc_combo {{
         self._stop_elf_spinner()
         self._btn_elf_load.setEnabled(True)
 
-        if count == -2:   # folder scan timed out
-            self._show_elf_banner("error",
-                "Folder too large — please select a more specific subfolder "
-                "(e.g. Debug or Release).")
-            return
         if count == -1:   # folder scan found nothing
             self._show_elf_banner("error", "No .elf / .axf file found in that folder.")
             return
@@ -2616,6 +2782,26 @@ QDialog QLineEdit#sc_combo {{
             f"{count} variables loaded — click  +  on any channel to add them")
         self._apply_style()
         self._elf_start_watch(_ELF_PATH)
+
+    def _on_elf_cancel(self):
+        """User clicked Cancel during folder scan — signal the worker to abort."""
+        self._elf_cancel_requested = True
+        self._sig_elf_loaded.emit(0)   # will call _on_elf_loaded_slot → stop spinner
+
+    def _on_elf_pick(self, elfs: list):
+        """Main-thread slot: show ELF picker dialog and unblock the worker thread."""
+        chosen = ScopeWindow._pick_elf_dialog("", elfs)
+        self._pending_elf_choice = chosen or ""
+        self._elf_pick_evt.set()
+
+    def _on_trig_status(self, state: str):
+        """Update the trigger status badge."""
+        if not hasattr(self, '_lbl_trig_badge'):
+            return
+        self._lbl_trig_badge.setText(state)
+        self._lbl_trig_badge.setProperty("trig_state", state)
+        self._lbl_trig_badge.style().unpolish(self._lbl_trig_badge)
+        self._lbl_trig_badge.style().polish(self._lbl_trig_badge)
 
     def _on_ch_plus(self, ch_idx: int):
         """Open the ELF variable picker for channel ch_idx."""
@@ -2933,10 +3119,20 @@ QDialog QLineEdit#sc_combo {{
             QMessageBox.warning(self, "Operation in Progress",
                 "Stop the Scroll session before switching to Real Time mode.")
             return
+        def _send_recmod_zero():
+            try:
+                with self.serial_manager._lock:
+                    self.serial_manager._ser.write(
+                        f"#s recmod {dec_encode(0.0)};\n".encode("ascii"))
+            except Exception:
+                logging.debug("recmod=0 write failed", exc_info=True)
+
         if self._realtime_running:
             self._realtime_running = False
             self._set_status("Stopping real-time...")
+            _send_recmod_zero()
         else:
+            _send_recmod_zero()          # clear any leftover scroll mode
             self._realtime_running = True
             self._update_button_states()
             threading.Thread(target=self._worker_realtime, daemon=True).start()
@@ -2972,20 +3168,20 @@ QDialog QLineEdit#sc_combo {{
                 return
             cfg = self.last_config
             sample_rate = cfg['samplefreq']
-            ring_size = max(2, round(t_display * sample_rate))
-            # Init ring buffers (deque, matching reference)
-            self._scroll_rings = [
-                collections.deque([float('nan')] * ring_size, maxlen=ring_size)
-                for _ in range(4)
-            ]
-            self._scroll_t_ring   = collections.deque([float('nan')] * ring_size, maxlen=ring_size)
-            self._scroll_t0       = time.monotonic()
-            self._scroll_t_display = t_display
-            self._scroll_frame_count = 0
-            self._scroll_running  = True
-            self._scroll_ch_names = cfg.get('ch_names', ['None'] * 4)
+            num_samples = cfg['n_samples']
+            scroll_total = 100 * num_samples
+            display_window = max(2, min(round(t_display * sample_rate), scroll_total))
+            self._scroll_array         = np.zeros((4, scroll_total), dtype=np.float32)
+            self._scroll_write_ptr     = 0
+            self._scroll_read_ptr      = 0
+            self._scroll_num_samples   = num_samples
+            self._scroll_display_window = display_window
+            self._scroll_t_display     = t_display
+            self._scroll_frame_count   = 0
+            self._scroll_running       = True
+            self._scroll_ch_names      = cfg.get('ch_names', ['None'] * 4)
             # Build axes once
-            self._scroll_setup_axes(cfg['ch_codes'], t_display, ring_size)
+            self._scroll_setup_axes(cfg['ch_codes'], t_display, display_window)
             self._update_button_states()
             # Set firmware to continuous mode
             try:
@@ -3050,13 +3246,13 @@ QDialog QLineEdit#sc_combo {{
         self._ab_mode = checked
         p = _get_palette()
         _c = p.get("red", "#F87171") if checked else "#7B9AB8"
-        self._btn_ab.setIcon(qta.icon("fa5s.crosshairs", color=_c))
+        self._btn_ab.setIcon(qta.icon("ph.crosshair", color=_c))
         if not checked:
             self._cursor_a = None
             self._cursor_b = None
             self._clear_ab_lines()
             self.canvas.draw_idle()
-            self._lbl_coords.setText("  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom")
+            self._coords_overlay.hide()
             self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
@@ -3070,6 +3266,18 @@ QDialog QLineEdit#sc_combo {{
                 except Exception:
                     pass
                 setattr(self, attr, None)
+
+    def _redraw_ab_lines(self):
+        """Recreate A/B cursor vlines on the current axes (call after zoom/pan)."""
+        self._clear_ab_lines()
+        if self._cursor_a is not None:
+            self._cursor_a_line = self.ax.axvline(
+                self._cursor_a[0], color='#F0A000',
+                linewidth=1.2, linestyle='--', zorder=5)
+        if self._cursor_b is not None:
+            self._cursor_b_line = self.ax.axvline(
+                self._cursor_b[0], color='#40C0A0',
+                linewidth=1.2, linestyle='--', zorder=5)
 
     def _autoscale_y_to_view(self):
         """Rescale Y axis to the min/max of data visible in the current X window."""
@@ -3110,6 +3318,11 @@ QDialog QLineEdit#sc_combo {{
 
     def _on_scroll_zoom(self, event):
         self._stop_hint()
+        if self._scroll_running:
+            from PySide6.QtWidgets import QToolTip
+            from PySide6.QtGui import QCursor
+            QToolTip.showText(QCursor.pos(), "Zoom locked during Scroll — stop to zoom", self.canvas)
+            return
         if self._realtime_running:
             from PySide6.QtWidgets import QToolTip
             from PySide6.QtGui import QCursor
@@ -3163,6 +3376,8 @@ QDialog QLineEdit#sc_combo {{
             self.ax.set_ylim(ny0, ny1)
 
         self._blit_bg = None
+        if self._ab_mode:
+            self._redraw_ab_lines()
         self.canvas.draw()   # draw() instead of draw_idle() = synchronous, no lag
 
     def _on_pan_motion(self, event):
@@ -3265,6 +3480,9 @@ QDialog QLineEdit#sc_combo {{
         self._combo_trig_ch.setEnabled(checked)
         self._combo_trig_edge.setEnabled(checked)
         self._spin_trig_level.setEnabled(checked)
+        self._lbl_trig_badge.setVisible(checked)
+        if not checked:
+            self._on_trig_status("IDLE")
         self._update_trigger_line()
 
     def _update_trigger_line(self):
@@ -3351,7 +3569,10 @@ QDialog QLineEdit#sc_combo {{
             self._clear_ab_lines()
             self._cursor_a_line = self.ax.axvline(event.xdata, color='#F0A000',
                                                    linewidth=1.2, alpha=0.9, linestyle='-')
-            self._lbl_coords.setText(f"  A: t={x_s:.4f} s  val={y:.4g}    left-click to set B")
+            self._lbl_t.setText(f"A: t={x_s:.4f} s")
+            self._lbl_v.setText(f"val={y:.4g}  →click B")
+            self._coords_overlay.show()
+            self._reposition_coords()
             self._blit_bg = None
             self.canvas.draw_idle()
         else:
@@ -3366,11 +3587,10 @@ QDialog QLineEdit#sc_combo {{
             xa, ya = self._cursor_a
             dt = event.xdata - xa
             dy = y - ya
-            self._lbl_coords.setText(
-                f"  A: t={xa:.4f}s  val={ya:.4g}    "
-                f"B: t={x_s:.4f}s  val={y:.4g}    "
-                f"ΔT={dt:.4f}s  ΔY={dy:.4g}    click to move B"
-            )
+            self._lbl_t.setText(f"ΔT={dt:.4f}s  ΔY={dy:.4g}")
+            self._lbl_v.setText(f"A={ya:.4g}  B={y:.4g}")
+            self._coords_overlay.show()
+            self._reposition_coords()
             self._cursor_b = None  # allow re-clicking B
             self._blit_bg = None
             self.canvas.draw_idle()
@@ -3428,7 +3648,7 @@ QDialog QLineEdit#sc_combo {{
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_tdisplay_change(self, value):
-        if not self._scroll_running or self._scroll_rings is None or self.last_config is None:
+        if not self._scroll_running or self._scroll_array is None or self.last_config is None:
             return
         try:
             t_display = float(value)
@@ -3437,29 +3657,12 @@ QDialog QLineEdit#sc_combo {{
         except (ValueError, TypeError):
             return
         sample_rate = self.last_config['samplefreq']
-        ring_size = max(2, round(t_display * sample_rate))
-        new_rings = []
-        for old_deque in self._scroll_rings:
-            old_data = list(old_deque)
-            if len(old_data) >= ring_size:
-                new_data = old_data[-ring_size:]
-            else:
-                new_data = [float('nan')] * (ring_size - len(old_data)) + old_data
-            new_rings.append(collections.deque(new_data, maxlen=ring_size))
-        old_times = list(self._scroll_t_ring)
-        if len(old_times) >= ring_size:
-            new_times = old_times[-ring_size:]
-        else:
-            dt = 1.0 / sample_rate
-            pad = [old_times[0] - (ring_size - len(old_times) - i) * dt
-                   for i in range(ring_size - len(old_times))] if old_times else [0.0] * (ring_size - len(old_times))
-            new_times = pad + old_times
-        with self._scroll_lock:
-            self._scroll_rings     = new_rings
-            self._scroll_t_ring    = collections.deque(new_times, maxlen=ring_size)
-            self._scroll_t_display = t_display
-        self._scroll_setup_axes(self.last_config['ch_codes'], t_display, ring_size)
-        logging.debug("SCOPE _on_tdisplay_change: resized rings to %d pts", ring_size)
+        scroll_total = self._scroll_array.shape[1]
+        display_window = max(2, min(round(t_display * sample_rate), scroll_total))
+        self._scroll_display_window = display_window
+        self._scroll_t_display = t_display
+        self._scroll_setup_axes(self.last_config['ch_codes'], t_display, display_window)
+        logging.debug("SCOPE _on_tdisplay_change: display_window=%d pts", display_window)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  CANVAS RESIZE
@@ -3472,6 +3675,10 @@ QDialog QLineEdit#sc_combo {{
         except Exception:
             pass
         self.canvas.draw_idle()
+        if self._hint_active:
+            QTimer.singleShot(50, self._reposition_hint)
+        if hasattr(self, '_coords_overlay') and self._coords_overlay.isVisible():
+            QTimer.singleShot(50, self._reposition_coords)
         if self._scroll_running and self._scroll_lines:
             QTimer.singleShot(50, self._recapture_blit_bg)
 
@@ -3507,7 +3714,11 @@ QDialog QLineEdit#sc_combo {{
             except Exception:
                 pass
         if event.inaxes is self.ax and event.xdata is not None and self._has_plot_data:
-            self._lbl_coords.setText(f"  t = {event.xdata:.4f} s    val = {event.ydata:.4g}")
+            self._lbl_t.setText(f"t = {event.xdata:.4f} s")
+            self._lbl_v.setText(f"y = {event.ydata:.4g}")
+            if not self._coords_overlay.isVisible():
+                self._coords_overlay.show()
+                self._reposition_coords()
             p = _get_palette()
             cross_color = "#4A90D9" if not self._is_dark(p) else "#6BAEE8"
             canvas = self.canvas
@@ -3532,9 +3743,8 @@ QDialog QLineEdit#sc_combo {{
             self.ax.draw_artist(self._crosshair_v)
             canvas.blit(self.ax.bbox)
         else:
-            _hint = "  Right-click + drag to pan  |  Scroll wheel to zoom  |  D = reset zoom"
-            if self._lbl_coords.text() != _hint:
-                self._lbl_coords.setText(_hint)
+            if self._coords_overlay.isVisible():
+                self._coords_overlay.hide()
             if self._crosshair_v is not None:
                 self._blit_bg = None
                 self._crosshair_v.remove()
@@ -3644,24 +3854,24 @@ QDialog QLineEdit#sc_combo {{
             if n_samples > 4000:
                 raise ValueError(f"Too many samples: {n_samples} > limit 4000")
 
-            # Determine whether to use address-based recvar (ELF variables) or
-            # the legacy recad code path (built-in named variables only).
-            # Priority: if the channel name exists in _ELF_SYMBOL_INFO with a
-            # valid RAM address, always use the address (works for ANY variable).
-            # Fall back to the firmware code only when no ELF address is available.
             ch_names    = cfg_params.get('ch_names', ["None"] * 4)
             ch_addrs    = []   # resolved address per channel (0 = use recad code)
             use_recvar  = False
-            for i, name in enumerate(ch_names):
-                info = _ELF_SYMBOL_INFO.get(name)
-                if info:
-                    addr = info[0]
-                    # Only use address if it points into MCU RAM (0x20000000+)
-                    if addr >= 0x20000000:
-                        ch_addrs.append(addr)
-                        use_recvar = True
-                        continue
-                ch_addrs.append(0)
+            if getattr(self, '_use_elf_addresses', False):
+                # Address-based path — only active when user explicitly enables it via
+                # Monitoring → "Use ELF symbol addresses (advanced)". Off by default so
+                # behaviour matches the expert app which always uses recad numeric codes.
+                for i, name in enumerate(ch_names):
+                    info = _ELF_SYMBOL_INFO.get(name)
+                    if info:
+                        addr = info[0]
+                        if addr >= 0x20000000:
+                            ch_addrs.append(addr)
+                            use_recvar = True
+                            continue
+                    ch_addrs.append(0)
+            else:
+                ch_addrs = [0] * 4
 
             recad_value = (ch_codes[0] * 1_000_000 + ch_codes[1] * 10_000 +
                            ch_codes[2] * 100        + ch_codes[3])
@@ -3737,15 +3947,26 @@ QDialog QLineEdit#sc_combo {{
             self.is_configured = False
             msg = str(e)
             if "not open" in msg.lower() or "port" in msg.lower():
-                self._set_status("No serial port connected. Connect first, then configure.")
+                modal_msg = "Not connected to serial port.\nConnect first, then configure."
+                self._set_status("Configure failed — not connected.")
             elif "channel" in msg.lower() or "select" in msg.lower():
-                self._set_status("Error: Select at least one channel (set Ch1–Ch4 to a variable, not None)")
+                modal_msg = "Select at least one channel.\nSet Ch1–Ch4 to a variable (not None)."
+                self._set_status("Configure failed — no channel selected.")
             elif "overflow" in msg.lower() or "bytes" in msg.lower():
-                self._set_status("Buffer overflow. Reduce Rec time or sample rate, or use fewer channels.")
+                modal_msg = f"Buffer overflow: {msg}\nReduce record time, sample rate, or number of channels."
+                self._set_status("Configure failed — buffer overflow.")
             elif "samples" in msg.lower():
-                self._set_status("Too many samples. Reduce Rec time or increase period.")
+                modal_msg = f"Too many samples: {msg}\nReduce record time or increase sample period."
+                self._set_status("Configure failed — too many samples.")
             else:
+                modal_msg = f"Configure failed:\n{msg}"
                 self._set_status(f"Configure failed: {msg}")
+            from PySide6.QtWidgets import QMessageBox as _QMB
+            QMetaObject.invokeMethod(
+                self, "_show_configure_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, modal_msg),
+            )
         finally:
             self._configuring = False
             self._sig_stop_spinner.emit()
@@ -3792,25 +4013,32 @@ QDialog QLineEdit#sc_combo {{
                             break
                 trig_display = VARIABLE_NAMES.get(trig_ch_code, f"Ch{trig_ch_idx+1}")
                 if trig_fw_key:
+                    self._sig_trig_status.emit("ARMED")
                     self._set_status(f"Waiting for trigger on Ch{trig_ch_idx+1} ({trig_display}) "
                                      f"{'rising' if trig_rising else 'falling'} @ {trig_level:.3g}…")
                     prev_val = None
+                    first_poll = True
                     deadline = time.monotonic() + 30.0  # 30s trigger timeout
                     while time.monotonic() < deadline:
                         try:
                             resp = self.serial_manager.send(f"g {trig_fw_key}", expect_response=True)
-                            cur_val = float(resp.replace('+', '').replace(' ', ''))
+                            cur_val = dec_decode(resp)
+                            if first_poll:
+                                self._sig_trig_status.emit("WAIT")
+                                first_poll = False
                             if prev_val is not None:
                                 crossed = (trig_rising and prev_val < trig_level <= cur_val) or \
                                           (not trig_rising and prev_val > trig_level >= cur_val)
                                 if crossed:
                                     logging.debug("SCOPE trigger fired: prev=%.4g cur=%.4g", prev_val, cur_val)
+                                    self._sig_trig_status.emit("TRIGGERED")
                                     break
                             prev_val = cur_val
                         except Exception as _e:
                             logging.debug("SCOPE trigger poll failed: %s", _e)
-                        time.sleep(0.05)
+                        time.sleep(0.1)
                     else:
+                        self._sig_trig_status.emit("DONE")
                         self._set_status("Trigger timeout: no crossing detected within 30 s")
                         self._sig_update_buttons.emit()
                         return
@@ -3836,22 +4064,7 @@ QDialog QLineEdit#sc_combo {{
                 ser.reset_input_buffer()
                 ser.write(b"#g recbuf ;\n")
                 logging.info("SCOPE: Sent #g recbuf ; (expecting %d bytes)", expected_bytes)
-                # Expert-style polling loop: up to 5 s, reads in chunks as bytes arrive
-                buffer_response = bytearray()
-                timeout_count = 0
-                timeout_max = 500  # 500 × 10 ms = 5 s
-                while len(buffer_response) < expected_bytes and timeout_count < timeout_max:
-                    available = ser.in_waiting
-                    if available > 0:
-                        to_read = min(available, expected_bytes - len(buffer_response))
-                        chunk = ser.read(to_read)
-                        if chunk:
-                            buffer_response += chunk
-                            timeout_count = 0
-                    else:
-                        timeout_count += 1
-                        time.sleep(0.01)
-                buffer_response = bytes(buffer_response)
+                buffer_response = ser.read(expected_bytes)
                 received = len(buffer_response)
                 leftover = ser.in_waiting
                 if leftover > 0:
@@ -3885,7 +4098,9 @@ QDialog QLineEdit#sc_combo {{
         except Exception as e:
             logging.exception("Scope record failed")
             self._set_status(f"Record error: {e}")
+            self._sig_show_warning.emit("Recording Failed", f"Recording failed:\n{e}")
         finally:
+            self._sig_trig_status.emit("DONE")
             self._sig_update_buttons.emit()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3943,22 +4158,7 @@ QDialog QLineEdit#sc_combo {{
                         ser.reset_input_buffer()
                         ser.write(b"#g recbuf ;\n")
                         logging.info("SCOPE: Sent #g recbuf ; (expecting %d bytes)", expected_bytes)
-                        # Expert-style polling loop: up to 5 s, reads in chunks
-                        rt_buf_acc = bytearray()
-                        timeout_count = 0
-                        timeout_max = 500  # 500 × 10 ms = 5 s
-                        while len(rt_buf_acc) < expected_bytes and timeout_count < timeout_max:
-                            available = ser.in_waiting
-                            if available > 0:
-                                to_read = min(available, expected_bytes - len(rt_buf_acc))
-                                chunk = ser.read(to_read)
-                                if chunk:
-                                    rt_buf_acc += chunk
-                                    timeout_count = 0
-                            else:
-                                timeout_count += 1
-                                time.sleep(0.01)
-                        rt_buf = bytes(rt_buf_acc)
+                        rt_buf = ser.read(expected_bytes)
                         received = len(rt_buf)
                         leftover = ser.in_waiting
                         if leftover > 0:
@@ -3987,7 +4187,14 @@ QDialog QLineEdit#sc_combo {{
         except Exception as e:
             logging.exception("Real-time loop failed")
             self._set_status(f"Real-time error: {e}")
+            self._sig_show_warning.emit("Real-Time Failed", f"Real-time recording failed:\n{e}")
         finally:
+            try:
+                with self.serial_manager._lock:
+                    self.serial_manager._ser.write(
+                        f"#s recmod {dec_encode(0.0)};\n".encode("ascii"))
+            except Exception:
+                pass
             self.serial_manager.scope_active.clear()
             self._realtime_running = False
             self._set_status("RT stopped. Last frame preserved. [D] to reset zoom.")
@@ -4000,14 +4207,14 @@ QDialog QLineEdit#sc_combo {{
     #  SCROLL MODE  (QTimer-based, matching reference scope.py architecture)
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _scroll_setup_axes(self, ch_codes, t_display, ring_size):
+    def _scroll_setup_axes(self, ch_codes, t_display, display_window):
         """Build axes and one animated Line2D per active channel. Capture blit background."""
         p = _get_palette()
         dark = self._is_dark(p)
         grid_color = "#3A3A5C" if dark else "#E8EAF0"
 
-        zeros     = np.zeros(ring_size)
-        time_axis = np.linspace(-t_display, 0.0, ring_size)
+        zeros     = np.zeros(display_window)
+        time_axis = np.linspace(-t_display, 0.0, display_window)
 
         self.ax.cla()
         self.ax.set_facecolor(p['input_bg'])
@@ -4055,7 +4262,7 @@ QDialog QLineEdit#sc_combo {{
         scroll_leg.set_visible(not self._hide_labels)
         self.canvas.draw()
         self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
-        logging.debug("SCOPE _scroll_setup_axes: built with ring_size=%d", ring_size)
+        logging.debug("SCOPE _scroll_setup_axes: built with display_window=%d", display_window)
 
     def _scroll_half_poll_loop(self):
         """Daemon thread: polls rechalf every 5 ms without touching the Qt main thread.
@@ -4079,26 +4286,23 @@ QDialog QLineEdit#sc_combo {{
                     self.serial_manager._lock.release()
 
                 if half == 1:
-                    self._scroll_read_buffer()
+                    threading.Thread(target=self._scroll_read_buffer,
+                                     daemon=True).start()
                 else:
                     self._scroll_half_stop.wait(0.005)
             except Exception:
                 self._scroll_half_stop.wait(0.005)
 
     def _scroll_read_buffer(self):
-        """Background thread: read binary buffer, clear rechalf, push to ring deques.
-        Re-starts the poll timer when done."""
+        """Background thread: read binary buffer, clear rechalf, write to numpy circular array."""
         if not self._scroll_running or self.last_config is None:
             return
         try:
             cfg            = self.last_config
             ch_codes       = cfg['ch_codes']
-            ch_datatypes   = cfg['ch_datatypes']
             num_samples    = cfg['n_samples']
             expected_bytes = cfg['expected_bytes']
-            sample_rate    = cfg['samplefreq']
             clear_half_cmd = f"#s rechalf {dec_encode(0.0)};\n".encode("ascii")
-            t_read         = time.monotonic() - self._scroll_t0
 
             with self.serial_manager._lock:
                 ser = self.serial_manager._ser
@@ -4123,21 +4327,23 @@ QDialog QLineEdit#sc_combo {{
 
             self._sig_bytes.emit(received, expected_bytes)
 
-            if received == expected_bytes:
+            if received == expected_bytes and self._scroll_array is not None:
                 channels_data = self._parse_buffer(bytes(buf), cfg, num_samples)
-                # Push NaN separator then new block into deques (matching reference)
-                block_times = [float('nan')] + [
-                    t_read - (num_samples - 1 - i) / sample_rate
-                    for i in range(num_samples)
-                ]
-                if self._scroll_rings is not None:
-                    with self._scroll_lock:
-                        if self._scroll_t_ring is not None:
-                            self._scroll_t_ring.extend(block_times)
-                        for ch_idx in range(4):
-                            if ch_codes[ch_idx] > 0:
-                                self._scroll_rings[ch_idx].extend(
-                                    [float('nan')] + channels_data[ch_idx])
+                scroll_total = self._scroll_array.shape[1]
+                ptr = self._scroll_write_ptr
+                end = ptr + num_samples
+                if end <= scroll_total:
+                    for ch_idx in range(4):
+                        if ch_codes[ch_idx] > 0:
+                            self._scroll_array[ch_idx, ptr:end] = channels_data[ch_idx]
+                else:
+                    part1 = scroll_total - ptr
+                    part2 = num_samples - part1
+                    for ch_idx in range(4):
+                        if ch_codes[ch_idx] > 0:
+                            self._scroll_array[ch_idx, ptr:scroll_total] = channels_data[ch_idx][:part1]
+                            self._scroll_array[ch_idx, 0:part2] = channels_data[ch_idx][part1:]
+                self._scroll_write_ptr = end % scroll_total
                 self._scroll_frame_count += 1
                 self._sig_status.emit(f"Scroll — frame {self._scroll_frame_count}")
             else:
@@ -4156,42 +4362,62 @@ QDialog QLineEdit#sc_combo {{
         try:
             if self._scroll_bg is None or not self._scroll_lines:
                 return
-            if self._scroll_rings is None:
+            if self._scroll_array is None:
                 return
 
-            ch_codes   = self.last_config['ch_codes']
-            t_display  = self._scroll_t_display
-            with self._scroll_lock:
-                snapshots = [np.array(ring) for ring in self._scroll_rings]
-                t_abs     = np.array(self._scroll_t_ring) if self._scroll_t_ring is not None else None
+            ch_codes      = self.last_config['ch_codes']
+            num_samples   = self._scroll_num_samples
+            display_window = self._scroll_display_window
+            scroll_total  = self._scroll_array.shape[1]
+            sample_rate   = self.last_config['samplefreq']
 
-            if t_abs is not None:
-                t_now     = time.monotonic() - self._scroll_t0
-                time_axis = t_abs - t_now
+            # Advance read pointer toward write pointer (expert algorithm)
+            safe_limit = (self._scroll_write_ptr - num_samples) % scroll_total
+            gap  = (safe_limit - self._scroll_read_ptr) % scroll_total
+            step = max(1, round(sample_rate * 0.05))
+            if gap >= num_samples:
+                self._scroll_read_ptr = (safe_limit - num_samples + step) % scroll_total
+            elif gap >= step:
+                self._scroll_read_ptr = (self._scroll_read_ptr + step) % scroll_total
             else:
-                ring_size = len(snapshots[0]) if snapshots else 1
-                time_axis = np.linspace(-t_display, 0.0, ring_size)
+                self._scroll_read_ptr = safe_limit
 
-            # Auto-scale Y across all active channels (code>0 OR ELF address channel)
-            ch_names_sc = self.last_config.get('ch_names', ['None']*4)
-            def _sc_active(i):
-                if ch_codes[i] > 0: return True
-                info = _ELF_SYMBOL_INFO.get(ch_names_sc[i])
-                return info is not None and info[0] >= 0x20000000
-            all_vals = np.concatenate([snapshots[i] for i in range(4)
-                                       if _sc_active(i) and len(snapshots[i])])
-            valid = all_vals[np.isfinite(all_vals)]
-            if len(valid) > 0:
-                ymin, ymax = float(valid.min()), float(valid.max())
-                margin = (ymax - ymin) * 0.1 if ymax != ymin else 1.0
-                new_ylim = (ymin - margin, ymax + margin)
-                cur_ylim = self.ax.get_ylim()
-                if (abs(new_ylim[0] - cur_ylim[0]) > margin * 0.5 or
-                        abs(new_ylim[1] - cur_ylim[1]) > margin * 0.5):
-                    if self._ylim_locked is None:
-                        self.ax.set_ylim(new_ylim)
-                        self.canvas.draw()
-                        self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            display_end   = self._scroll_read_ptr
+            display_start = (display_end - display_window) % scroll_total
+
+            if display_start < display_end:
+                snapshots = [self._scroll_array[i, display_start:display_end].copy()
+                             for i in range(4)]
+            else:
+                snapshots = [np.concatenate([self._scroll_array[i, display_start:],
+                                             self._scroll_array[i, :display_end]])
+                             for i in range(4)]
+
+            time_axis = np.linspace(-display_window / sample_rate, 0.0, display_window)
+
+            # Auto-scale Y — throttled to every 10 frames to avoid breaking blit pipeline
+            self._scroll_yscale_tick = getattr(self, '_scroll_yscale_tick', 0) + 1
+            if self._scroll_yscale_tick >= 10:
+                self._scroll_yscale_tick = 0
+                ch_names_sc = self.last_config.get('ch_names', ['None']*4)
+                def _sc_active(i):
+                    if ch_codes[i] > 0: return True
+                    info = _ELF_SYMBOL_INFO.get(ch_names_sc[i])
+                    return info is not None and info[0] >= 0x20000000
+                active_snaps = [snapshots[i] for i in range(4) if _sc_active(i) and len(snapshots[i])]
+                if active_snaps and self._ylim_locked is None:
+                    all_vals = np.concatenate(active_snaps)
+                    valid = all_vals[np.isfinite(all_vals)]
+                    if len(valid) > 0:
+                        ymin, ymax = float(valid.min()), float(valid.max())
+                        margin = (ymax - ymin) * 0.1 if ymax != ymin else 1.0
+                        new_ylim = (ymin - margin, ymax + margin)
+                        cur_ylim = self.ax.get_ylim()
+                        if (abs(new_ylim[0] - cur_ylim[0]) > margin * 0.5 or
+                                abs(new_ylim[1] - cur_ylim[1]) > margin * 0.5):
+                            self.ax.set_ylim(new_ylim)
+                            self.canvas.draw()
+                            self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
 
             self.canvas.restore_region(self._scroll_bg)
             for ch_idx, line in self._scroll_lines.items():
@@ -4242,9 +4468,48 @@ QDialog QLineEdit#sc_combo {{
         dark = self._is_dark(p)
         grid_color = "#3A3A5C" if dark else "#E8EAF0"
 
+        # Warm path — realtime only: update existing line data without rebuilding axes
+        same_topology = (
+            self._realtime_running
+            and self._has_plot_data
+            and self._plotted_lines
+            and self._last_plot_data is not None
+            and tuple(cfg['ch_codes']) == tuple(self._last_plot_data[2]['ch_codes'])
+            and getattr(self, '_drawstyle_cache', None) == self._drawstyle
+        )
+        if same_topology:
+            for i, samples in enumerate(ch_data):
+                line = self._plotted_lines.get(i)
+                if line is None or not samples:
+                    continue
+                factor = self._ch_scale[i] if i < len(self._ch_scale) else 1.0
+                ys = [s * factor for s in samples] if factor != 1.0 else samples
+                line.set_data(t_axis, ys)
+                if self._live_labels and i < len(self._live_labels):
+                    var_name = VARIABLE_NAMES.get(cfg['ch_codes'][i], f"Ch{i+1}")
+                    unit = VARIABLE_UNITS.get(var_name, "")
+                    last_val = ys[-1] if ys else float('nan')
+                    unit_str = f" {unit}" if unit else ""
+                    scale_suffix = f" ×{int(factor)}" if factor != 1.0 else ""
+                    self._live_labels[i].setText(f"{var_name}: {last_val:.4g}{unit_str}{scale_suffix}")
+            if self._ylim_locked is None:
+                try:
+                    all_vals = [v for s in ch_data for v in s if s]
+                    if all_vals:
+                        lo, hi = min(all_vals), max(all_vals)
+                        margin = max((hi - lo) * 0.05, 1e-6)
+                        self.ax.set_ylim(lo - margin, hi + margin)
+                except Exception:
+                    pass
+            self.canvas.draw_idle()
+            self._last_plot_data = (ch_data, t_axis, cfg)
+            return
+
         self.ax.cla()
         self._trigger_line = None   # ax.cla() destroys all artists
         self._hint_ax_text = None   # ax.cla() destroys all artists
+        self._cursor_a_line = None  # ax.cla() destroys cursor vlines
+        self._cursor_b_line = None
         self.ax.set_facecolor(p['input_bg'])
         self.fig.patch.set_facecolor(p['card'])
 
@@ -4350,6 +4615,7 @@ QDialog QLineEdit#sc_combo {{
         self._data_xlim = tuple(self.ax.get_xlim())
         self._data_ylim = tuple(self.ax.get_ylim())
 
+        self._drawstyle_cache = self._drawstyle
         self._last_plot_data = (ch_data, t_axis, cfg)
         self._btn_export.setEnabled(True)
         self._btn_screenshot.setEnabled(True)
@@ -4421,11 +4687,28 @@ QDialog QLineEdit#sc_combo {{
 
     def _on_drawstyle_toggled(self, checked):
         self._drawstyle = "steps-post" if checked else "default"
+        self._drawstyle_cache = self._drawstyle  # keep warm-path cache in sync
         QSettings("Appcon Technologies", "AMC Interface").setValue(
             "scope/drawstyle", self._drawstyle)
-        _ds_icon = "fa5s.signal" if checked else "fa5s.chart-line"
+        _ds_icon = "ph.chart-bar" if checked else "ph.chart-line"
         self._btn_drawstyle.setIcon(qta.icon(_ds_icon, color="#7B9AB8"))
-        if self._last_plot_data is not None and not self._realtime_running:
+
+        # Apply to live line artists in scroll or realtime without restart
+        applied = False
+        for line in self._scroll_lines.values():
+            line.set_drawstyle(self._drawstyle)
+            applied = True
+        for line in self._plotted_lines.values():
+            line.set_drawstyle(self._drawstyle)
+            applied = True
+
+        if self._scroll_running and applied:
+            # Blit background is now stale — redraw and recapture
+            self.canvas.draw()
+            self._scroll_bg = self.canvas.copy_from_bbox(self.ax.bbox)
+        elif self._realtime_running and applied:
+            self.canvas.draw_idle()
+        elif self._last_plot_data is not None:
             ch_data, t_axis, cfg = self._last_plot_data
             self._do_plot(ch_data, t_axis, cfg)
 
@@ -4460,6 +4743,26 @@ QDialog QLineEdit#sc_combo {{
         if self._spin_samplefreq.value() > value:
             self._spin_samplefreq.setValue(value)
 
+    def _show_configure_error(self, msg: str):
+        from PySide6.QtWidgets import QMessageBox
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Configure Error")
+        dlg.setText(msg)
+        dlg.setIcon(QMessageBox.Icon.Critical)
+        dlg.exec()
+
+    def _refresh_sc_led(self):
+        is_open = bool(getattr(self.serial_manager, 'is_open', False))
+        lbl = self._sc_conn_led
+        if is_open:
+            lbl.setText("⬤  Connected")
+            lbl.setObjectName("sc_led_connected")
+        else:
+            lbl.setText("⬤  Disconnected")
+            lbl.setObjectName("sc_led_disconnected")
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+
     def closeEvent(self, event):
         self._realtime_running = False
         self._scroll_running   = False
@@ -4467,7 +4770,8 @@ QDialog QLineEdit#sc_combo {{
         self._save_session_config()
         for t in (self._scroll_display_timer,
                   self._no_port_timer,
-                  getattr(self, '_spinner_timer', None)):
+                  getattr(self, '_spinner_timer', None),
+                  getattr(self, '_sc_led_timer', None)):
             if t is not None:
                 t.stop()
         for cid_attr in ('_pan_release_cid', '_leg_pick_cid'):

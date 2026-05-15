@@ -52,6 +52,16 @@ except ImportError:
 
 from protocol import dec_encode, dec_decode
 
+def _px(n: int) -> int:
+    try:
+        from PySide6.QtWidgets import QApplication
+        s = QApplication.primaryScreen()
+        if s is not None:
+            return max(1, round(n * s.logicalDotsPerInch() / 96.0))
+    except Exception:
+        pass
+    return n
+
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
@@ -110,26 +120,26 @@ def _modal(parent, title: str, msg: str, icon_name: str, icon_color: str):
         lay.addWidget(ico)
     ttl = QLabel(title)
     ttl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    ttl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {p['text']}; background: transparent;")
+    ttl.setStyleSheet(f"font-size: {_px(14)}px; font-weight: 700; color: {p['text']}; background: transparent;")
     lay.addWidget(ttl)
     body = QLabel(msg)
     body.setWordWrap(True)
     body.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    body.setStyleSheet(f"font-size: 12px; color: {p['text2']}; background: transparent;")
+    body.setStyleSheet(f"font-size: {_px(12)}px; color: {p['text2']}; background: transparent;")
     lay.addWidget(body)
     btn_row = QHBoxLayout()
     btn_row.addStretch()
     ok_btn = QPushButton("OK")
     ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     ok_btn.setStyleSheet(
-        f"QPushButton {{ background: {p['blue']}; color: white; border: none; border-radius: 5px; "
-        "padding: 7px 24px; font-size: 12px; font-weight: 700; }"
+        f"QPushButton {{ background: {p['blue']}; color: white; border: none; border-radius: {_px(5)}px; "
+        f"padding: {_px(7)}px {_px(24)}px; font-size: {_px(12)}px; font-weight: 700; }}"
         f"QPushButton:hover {{ background: {p['blue_dark']}; }}")
     ok_btn.clicked.connect(dlg.accept)
     btn_row.addWidget(ok_btn)
     lay.addLayout(btn_row)
     outer.addWidget(card)
-    dlg.setMinimumWidth(340)
+    dlg.setMinimumWidth(_px(340))
     dlg.exec()
 
 
@@ -171,8 +181,9 @@ class ElectricalParametersIdentification(QDialog):
 
         self.setWindowTitle("Electrical Parameters Identification")
         self.setObjectName("ep_dialog")
-        self.resize(860, 560)
-        self.setMinimumSize(820, 520)
+        _scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(_px(860), int(_scr.width() * 0.9)), min(_px(560), int(_scr.height() * 0.85)))
+        self.setMinimumSize(_px(820), _px(520))
 
         self._build_ui()
         self._apply_style()
@@ -225,7 +236,7 @@ class ElectricalParametersIdentification(QDialog):
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
         form.setColumnStretch(1, 1)
-        form.setColumnMinimumWidth(0, 130)
+        form.setColumnMinimumWidth(0, _px(130))
 
         self.pole_pair_entry = self._mk_entry(int_only=False)
         self._add_form_row(form, 0, "Pole Pair Number", self.pole_pair_entry, "")
@@ -277,7 +288,7 @@ class ElectricalParametersIdentification(QDialog):
 
         arrow_lbl = QLabel("›")
         arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        arrow_lbl.setFixedWidth(24)
+        arrow_lbl.setFixedWidth(_px(24))
         arrow_lbl.setObjectName("ep_arrow_lbl")
         btn_row.addWidget(arrow_lbl)
 
@@ -346,7 +357,7 @@ class ElectricalParametersIdentification(QDialog):
 
         self.psif_accel_torque_entry = self._mk_entry()
         self.psif_accel_torque_entry.setText("25")
-        self.psif_accel_torque_entry.setFixedWidth(80)
+        self.psif_accel_torque_entry.setFixedWidth(_px(80))
         psif_row.addWidget(self.psif_accel_torque_entry)
         psif_row.addWidget(self._unit_lbl("%"))
         psif_row.addStretch()
@@ -373,7 +384,7 @@ class ElectricalParametersIdentification(QDialog):
         psif_result_row.setSpacing(6)
         psif_name_lbl = QLabel("PsiF identified (Wb)")
         psif_name_lbl.setObjectName("ep_res_name")
-        psif_name_lbl.setFixedWidth(150)
+        psif_name_lbl.setFixedWidth(_px(150))
         psif_name_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.psif_live_label = QLabel("—")
         self.psif_live_label.setTextFormat(Qt.TextFormat.RichText)
@@ -394,7 +405,7 @@ class ElectricalParametersIdentification(QDialog):
             row.setSpacing(6)
             name_lbl = QLabel(name)
             name_lbl.setObjectName("ep_res_name")
-            name_lbl.setFixedWidth(100)
+            name_lbl.setFixedWidth(_px(100))
             name_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             val_lbl = QLabel("—")
             val_lbl.setObjectName(obj_name_val)
@@ -439,6 +450,13 @@ class ElectricalParametersIdentification(QDialog):
         self.ki_isq_label = _result_row(pi_lay, "Ki Isq (A/Vs)", "ep_res_val_green")
 
         right_col.addWidget(pi_card)
+
+        self._btn_save_to_ctrl = QPushButton("Save to Controller")
+        self._btn_save_to_ctrl.setObjectName("ep_save_ctrl_btn")
+        self._btn_save_to_ctrl.setEnabled(False)
+        self._btn_save_to_ctrl.clicked.connect(self._on_save_to_controller)
+        right_col.addWidget(self._btn_save_to_ctrl)
+
         right_col.addStretch(1)
 
         # ─── Assemble columns ─────────────────────────────────────────────────
@@ -454,7 +472,7 @@ class ElectricalParametersIdentification(QDialog):
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        left_scroll.setMinimumWidth(340)
+        left_scroll.setMinimumWidth(_px(340))
         cols.addWidget(left_scroll, 1)
 
         v_sep = QFrame()
@@ -468,7 +486,7 @@ class ElectricalParametersIdentification(QDialog):
     def _mk_entry(self, int_only=False) -> QLineEdit:
         e = QLineEdit()
         e.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        e.setMinimumWidth(110)
+        e.setMinimumWidth(_px(110))
         v = QDoubleValidator()
         v.setNotation(QDoubleValidator.Notation.StandardNotation)
         e.setValidator(v)
@@ -487,7 +505,7 @@ class ElectricalParametersIdentification(QDialog):
         grid.addWidget(entry, row, 1)
         u = QLabel(unit)
         u.setObjectName("ep_unit")
-        u.setMinimumWidth(50)
+        u.setMinimumWidth(_px(50))
         grid.addWidget(u, row, 2, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def _wire_signals(self):
@@ -511,61 +529,61 @@ class ElectricalParametersIdentification(QDialog):
         self.setStyleSheet(f"""
             QDialog{d} {{ background: {p['bg']}; }}
             {d} QLabel {{ background: transparent; color: {p['text']}; }}
-            {d} QLabel#ep_title      {{ font-size: 16px; font-weight: 700; color: {p['text']}; }}
-            {d} QLabel#ep_sub        {{ font-size: 11px; color: {p['muted']}; }}
-            {d} QLabel#ep_card_title {{ font-size: 13px; font-weight: 700; color: {p['text']}; }}
-            {d} QLabel#ep_field      {{ font-size: 11px; font-weight: 500; color: {p['text2']}; }}
-            {d} QLabel#ep_unit       {{ font-size: 11px; color: {p['muted']}; }}
+            {d} QLabel#ep_title      {{ font-size: {_px(16)}px; font-weight: 700; color: {p['text']}; }}
+            {d} QLabel#ep_sub        {{ font-size: {_px(11)}px; color: {p['muted']}; }}
+            {d} QLabel#ep_card_title {{ font-size: {_px(13)}px; font-weight: 700; color: {p['text']}; }}
+            {d} QLabel#ep_field      {{ font-size: {_px(11)}px; font-weight: 500; color: {p['text2']}; }}
+            {d} QLabel#ep_unit       {{ font-size: {_px(11)}px; color: {p['muted']}; }}
             {d} QLabel#ep_hint {{
-                font-size: 10px; font-weight: 600; color: {p['blue']};
-                background: {p['blue_light']}; border-radius: 4px;
-                padding: 2px 7px; font-style: normal;
+                font-size: {_px(10)}px; font-weight: 600; color: {p['blue']};
+                background: {p['blue_light']}; border-radius: {_px(4)}px;
+                padding: {_px(2)}px {_px(7)}px; font-style: normal;
             }}
-            {d} QLabel#ep_status     {{ font-size: 11px; font-weight: 600; color: {p['text2']}; }}
-            {d} QLabel#ep_res_name   {{ font-size: 11px; color: {p['muted']}; font-weight: 500; }}
+            {d} QLabel#ep_status     {{ font-size: {_px(11)}px; font-weight: 600; color: {p['text2']}; }}
+            {d} QLabel#ep_res_name   {{ font-size: {_px(11)}px; color: {p['muted']}; font-weight: 500; }}
             {d} QLabel#ep_res_val {{
-                font-size: 13px; font-weight: 700; color: {p['text']};
+                font-size: {_px(13)}px; font-weight: 700; color: {p['text']};
                 font-family: "Consolas", "Courier New", monospace; letter-spacing: 0.3px;
-                background: {p['bg']}; border-radius: 4px; padding: 3px 8px;
+                background: {p['bg']}; border-radius: {_px(4)}px; padding: {_px(3)}px {_px(8)}px;
                 border-left: 3px solid {p['border']};
             }}
             {d} QLabel#ep_res_val_green {{
-                font-size: 13px; font-weight: 700; color: {p['green']};
+                font-size: {_px(13)}px; font-weight: 700; color: {p['green']};
                 font-family: "Consolas", "Courier New", monospace; letter-spacing: 0.3px;
-                background: {p['bg']}; border-radius: 4px; padding: 3px 8px;
+                background: {p['bg']}; border-radius: {_px(4)}px; padding: {_px(3)}px {_px(8)}px;
                 border-left: 3px solid {p['green']};
             }}
-            {d} QFrame#ep_card  {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: 8px; }}
+            {d} QFrame#ep_card  {{ background: {p['white']}; border: 1px solid {p['border']}; border-radius: {_px(8)}px; }}
             {d} QFrame#ep_v_sep {{ color: {p['border']}; background: {p['border']}; }}
             {d} QScrollArea#ep_scroll {{ background: {p['bg']}; border: none; }}
             {d} QWidget#ep_scroll_inner {{ background: {p['bg']}; }}
-            {d} QLabel#ep_step_lbl  {{ font-size: 10px; font-weight: 700; color: {p['blue']}; background: transparent; }}
-            {d} QLabel#ep_arrow_lbl {{ font-size: 18px; font-weight: 700; color: {p['muted']}; background: transparent; }}
+            {d} QLabel#ep_step_lbl  {{ font-size: {_px(10)}px; font-weight: 700; color: {p['blue']}; background: transparent; }}
+            {d} QLabel#ep_arrow_lbl {{ font-size: {_px(18)}px; font-weight: 700; color: {p['muted']}; background: transparent; }}
             {d} QLineEdit {{
                 background: {p['input_bg']}; color: {p['text']};
-                border: 1px solid {p['border']}; border-radius: 5px;
-                padding: 4px 8px; font-size: 12px; min-height: 22px;
+                border: 1px solid {p['border']}; border-radius: {_px(5)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(12)}px; min-height: {_px(22)}px;
                 selection-background-color: {p['blue']};
             }}
             {d} QLineEdit:focus    {{ border-color: {p['blue']}; }}
             {d} QLineEdit:disabled {{ background: {p['bg']}; color: {p['muted']}; }}
             {d} QPushButton#ep_btn_primary {{
                 background: {p['blue']}; color: white; border: none;
-                border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 700;
+                border-radius: {_px(6)}px; padding: {_px(8)}px {_px(14)}px; font-size: {_px(12)}px; font-weight: 700;
             }}
             {d} QPushButton#ep_btn_primary:hover    {{ background: {p['blue_dark']}; }}
             {d} QPushButton#ep_btn_primary:disabled {{ background: {p['muted']}; color: {p['bg']}; }}
             {d} QPushButton#ep_btn_secondary {{
                 background: {p['card']}; color: {p['blue']};
-                border: 1.5px solid {p['blue']}; border-radius: 6px;
-                padding: 8px 14px; font-size: 12px; font-weight: 600;
+                border: 1.5px solid {p['blue']}; border-radius: {_px(6)}px;
+                padding: {_px(8)}px {_px(14)}px; font-size: {_px(12)}px; font-weight: 600;
             }}
             {d} QPushButton#ep_btn_secondary:hover    {{ background: {p['blue_light']}; }}
             {d} QPushButton#ep_btn_secondary:disabled {{ color: {p['muted']}; border-color: {p['border']}; }}
             QToolTip {{
                 background: #1E293B; color: #F1F5F9;
-                border: 1px solid #334155; border-radius: 4px;
-                padding: 4px 8px; font-size: 11px;
+                border: 1px solid #334155; border-radius: {_px(4)}px;
+                padding: {_px(4)}px {_px(8)}px; font-size: {_px(11)}px;
             }}
         """)
 
@@ -729,6 +747,19 @@ class ElectricalParametersIdentification(QDialog):
         logging.info(f"Identification completed: Rs={rs:.6f} Ohm, "
                      f"Lsd={lsd:.6f} H, Lsq={lsq:.6f} H, "
                      f"PsifTheory={psif_theory_wb:.6f} Wb")
+        self._btn_save_to_ctrl.setEnabled(True)
+
+    def _on_save_to_controller(self):
+        """Send s smpar to write identified parameters to controller NV memory."""
+        if not self.serial_manager.is_open:
+            _show_error(self, "Not Connected", "Connect to the controller first.")
+            return
+        try:
+            self.serial_manager.send("s smpar", expect_response=False)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Saved", "Parameters saved to controller memory.")
+        except Exception as e:
+            _show_error(self, "Save Failed", str(e))
 
     def _on_start_done(self):
         self.start_btn.setText("Start Identification")
